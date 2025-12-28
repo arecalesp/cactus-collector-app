@@ -8,9 +8,10 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 import io
 import json
+import time
 
 # --- Config & Setup ---
-st.set_page_config(page_title="Cactus Collector AI", page_icon="🌵")
+st.set_page_config(page_title="Cactus Collector AI (Bulk Mode)", page_icon="🌵", layout="wide")
 
 # โหลด Secrets
 try:
@@ -19,167 +20,173 @@ try:
     DRIVE_FOLDER_ID = st.secrets["drive_folder_id"]
     GCP_CREDS_DICT = dict(st.secrets["gcp_service_account"])
 except Exception as e:
-    st.error(f"กรุณาตั้งค่า secrets.toml ให้ครบถ้วน: {e}")
+    st.error(f"❌ ตั้งค่า Secrets ไม่ครบ: {e}")
     st.stop()
 
-# ตั้งค่า Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 
-# ตั้งค่า Google APIs (Drive & Sheets)
-SCOPES = [
-    'https://www.googleapis.com/auth/spreadsheets',
-    'https://www.googleapis.com/auth/drive.file'
-]
-creds = service_account.Credentials.from_service_account_info(
-    GCP_CREDS_DICT, scopes=SCOPES
-)
+# ตั้งค่า Google Drive/Sheets
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.file']
+creds = service_account.Credentials.from_service_account_info(GCP_CREDS_DICT, scopes=SCOPES)
 
-# ฟังก์ชันเชื่อมต่อ Google Sheets
 def append_to_sheet(data_row):
     service = build('sheets', 'v4', credentials=creds)
     sheet = service.spreadsheets()
     body = {'values': [data_row]}
-    result = sheet.values().append(
-        spreadsheetId=SHEET_ID,
-        range="Sheet1!A:E", # สมมติว่าเก็บข้อมูลที่ Sheet1
-        valueInputOption="USER_ENTERED",
-        body=body
+    return sheet.values().append(
+        spreadsheetId=SHEET_ID, range="Sheet1!A:E", valueInputOption="USER_ENTERED", body=body
     ).execute()
-    return result
 
-# ฟังก์ชันอัปโหลดรูปไป Google Drive
 def upload_to_drive(file_obj, filename):
     service = build('drive', 'v3', credentials=creds)
-    
-    file_metadata = {
-        'name': filename,
-        'parents': [DRIVE_FOLDER_ID]
-    }
-    
-    # รีเซ็ต pointer ของไฟล์
+    file_metadata = {'name': filename, 'parents': [DRIVE_FOLDER_ID]}
     file_obj.seek(0)
-    
     media = MediaIoBaseUpload(file_obj, mimetype='image/jpeg', resumable=True)
-    
-    file = service.files().create(
-        body=file_metadata,
-        media_body=media,
-        fields='id, webViewLink'
-    ).execute()
-    
+    file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
     return file.get('webViewLink')
 
-# ฟังก์ชันเรียก AI (Gemini)
-# ฟังก์ชันเรียก AI (Gemini) - แบบวนลูปหาโมเดลที่ใช้ได้
 def analyze_image(image):
-    # รายชื่อโมเดลที่จะไล่ลองใช้ทีละตัว (ตามลำดับที่คุณต้องการ)
+    # รายชื่อโมเดลที่จะไล่ลองใช้ (เรียงลำดับความแม่นยำ -> ความเร็ว)
     model_candidates = [
-        'gemini-1.5-flash',          # ชื่อมาตรฐาน (แนะนำใช้ชื่อนี้แทน models/gemini-flash-latest เพราะชัวร์สุด)
-        'gemini-2.0-flash-exp',      # ตัว experimental รุ่นใหม่
-        'gemini-1.5-pro-latest',     # ตัว Pro
-        'gemini-1.5-flash-latest',   # ลองชื่อแบบมี latest
+        'gemini-1.5-flash',
+        'gemini-1.5-pro',
+        'gemini-1.0-pro-vision-latest'
     ]
-
-    prompt = """
-    Analyze this image of a cactus in a pot.
-    1. Identify the number written on the pot label/tag (it is a sequence number). If not found, return empty string.
-    2. Identify the cactus species (Scientific Name).
-    3. Provide the common Thai name for this species (ชื่อภาษาไทย).
     
-    Return the result strictly in JSON format with these keys:
-    {
-        "pot_number": "...",
-        "species": "...",
-        "thai_name": "..."
-    }
+    prompt = """
+    Analyze this cactus image.
+    1. Read the sequence number on the pot label/tag.
+    2. Identify the Scientific Name.
+    3. Identify the Thai Name.
+    
+    Return ONLY valid JSON:
+    { "pot_number": "...", "species": "...", "thai_name": "..." }
     """
 
-    # วนลูปลองโมเดลทีละตัว
+    last_error = ""
     for model_name in model_candidates:
         try:
-            # print(f"Trying model: {model_name}...") # เอาไว้ดู log (ถ้าต้องการ)
             model = genai.GenerativeModel(model_name)
+            # เพิ่ม delay นิดหน่อยเพื่อกัน Limit
+            time.sleep(1) 
             response = model.generate_content([prompt, image])
-            
-            # ถ้าสำเร็จ ให้แกะ JSON แล้ว return เลย (ไม่ไปต่อตัวอื่น)
             text = response.text.strip()
-            if text.startswith("```json"):
-                text = text[7:-3]
-            return json.loads(text)
-            
+            # Clean Markdown
+            if text.startswith("```json"): text = text[7:-3]
+            elif text.startswith("```"): text = text[3:-3]
+            return json.loads(text), None # Success
         except Exception as e:
-            # ถ้าพัง ให้ลองตัวถัดไป
-            print(f"Model {model_name} failed: {e}")
+            last_error = f"{model_name}: {str(e)}"
+            print(f"Failed {model_name}: {e}")
             continue
-
-    # ถ้าลองครบทุกตัวแล้วยังพังหมด
-    return {"pot_number": "", "species": "Error: AI Failed", "thai_name": "ลองครบทุกโมเดลแล้วไม่สำเร็จ"}
+            
+    # ถ้าหลุดลูปมาแสดงว่าพังหมด
+    return {"pot_number": "", "species": "Unknown", "thai_name": "Unknown"}, last_error
 
 # --- UI Application ---
-st.title("🌵 บันทึกข้อมูลแคคตัส (AI Scanner)")
-st.write("อัปโหลดรูปแคคตัสที่มีป้ายหมายเลข เพื่อบันทึกลงระบบ")
+st.title("🌵 Cactus Collector (Batch Upload)")
+st.info("อัปโหลดหลายรูปพร้อมกันได้เลย ระบบจะสแกนทีเดียว")
 
-# อัปโหลดรูปภาพ
-uploaded_file = st.file_uploader("ถ่ายรูปหรือเลือกรูปภาพ", type=["jpg", "jpeg", "png"])
+# 1. Upload Section
+uploaded_files = st.file_uploader("เลือกรูปแคคตัสทั้งหมด", type=["jpg", "png"], accept_multiple_files=True)
 
-if uploaded_file is not None:
-    # แสดงรูปภาพ
-    image = Image.open(uploaded_file)
-    st.image(image, caption="รูปที่เลือก", use_container_width=True)
-    
-    # ปุ่มกดเพื่อให้ AI วิเคราะห์
-    if st.button("🔍 ให้ AI อ่านข้อมูล"):
-        with st.spinner('กำลังวิเคราะห์รูปภาพด้วย AI...'):
-            ai_data = analyze_image(image)
-            st.session_state['ai_result'] = ai_data
-            st.success("วิเคราะห์เสร็จสิ้น!")
+# Session State สำหรับเก็บข้อมูลที่สแกนแล้ว
+if 'scanned_data' not in st.session_state:
+    st.session_state['scanned_data'] = []
 
-    # ถ้ามีผลลัพธ์จาก AI แล้ว ให้แสดงแบบฟอร์ม
-    if 'ai_result' in st.session_state:
-        data = st.session_state['ai_result']
+if uploaded_files:
+    # ปุ่มเริ่มสแกน (กดครั้งเดียว)
+    if st.button(f"🔍 เริ่มสแกน AI ({len(uploaded_files)} รูป)"):
+        st.session_state['scanned_data'] = [] # Reset
+        progress_bar = st.progress(0)
+        status_text = st.empty()
         
-        with st.form("cactus_form"):
-            st.subheader("ตรวจสอบและแก้ไขข้อมูล")
+        for i, uploaded_file in enumerate(uploaded_files):
+            status_text.text(f"กำลังวิเคราะห์รูปที่ {i+1}/{len(uploaded_files)}: {uploaded_file.name}")
             
-            col1, col2 = st.columns(2)
-            with col1:
-                pot_number = st.text_input("หมายเลขกระถาง", value=data.get('pot_number', ''))
-            with col2:
-                # วันที่ปัจจุบัน
-                date_added = st.date_input("วันที่เพิ่ม", datetime.today())
+            image = Image.open(uploaded_file)
+            ai_result, error_msg = analyze_image(image)
             
-            species = st.text_input("ชื่อวิทยาศาสตร์ (Species)", value=data.get('species', ''))
-            thai_name = st.text_input("ชื่อภาษาไทย", value=data.get('thai_name', ''))
+            # เก็บข้อมูลลง List
+            st.session_state['scanned_data'].append({
+                "file": uploaded_file,
+                "img_obj": image,
+                "data": ai_result,
+                "error": error_msg,
+                "id": i
+            })
+            progress_bar.progress((i + 1) / len(uploaded_files))
             
-            submitted = st.form_submit_button("💾 บันทึกข้อมูล")
+        status_text.text("✅ วิเคราะห์ครบแล้ว! กรุณาตรวจสอบข้อมูลด้านล่าง")
+
+    # 2. Edit & Review Section
+    if st.session_state['scanned_data']:
+        with st.form("bulk_save_form"):
+            st.subheader("📝 ตรวจสอบและแก้ไขก่อนบันทึก")
             
-            if submitted:
-                with st.spinner('กำลังบันทึกลง Drive และ Sheets...'):
+            # วนลูปแสดงผลลัพธ์ทีละรายการ
+            valid_entries = [] # เก็บ Index ของรายการที่จะบันทึก
+            
+            for item in st.session_state['scanned_data']:
+                idx = item['id']
+                
+                # ใช้ Expander เพื่อความสะอาดตา
+                with st.expander(f"รูปที่ {idx+1}: {item['data'].get('pot_number', 'No Num')} - {item['data'].get('species', '?')}", expanded=True):
+                    
+                    # ถ้ามี Error จาก AI ให้โชว์สีแดง
+                    if item['error']:
+                        st.error(f"AI Warning: {item['error']}")
+                    
+                    col_img, col_form = st.columns([1, 3])
+                    
+                    with col_img:
+                        st.image(item['img_obj'], use_container_width=True)
+                    
+                    with col_form:
+                        # สร้าง Key ให้ไม่ซ้ำกันโดยใช้ index
+                        p_num = st.text_input("เลขกระถาง", value=item['data'].get('pot_number', ''), key=f"pot_{idx}")
+                        spec = st.text_input("พันธุ์ (Sci)", value=item['data'].get('species', ''), key=f"spec_{idx}")
+                        thai = st.text_input("ชื่อไทย", value=item['data'].get('thai_name', ''), key=f"thai_{idx}")
+                        
+                        # อัปเดตข้อมูลกลับเข้าไปใน session_state แบบ Realtime (ผ่าน key)
+                        item['final_data'] = {"pot": p_num, "spec": spec, "thai": thai}
+            
+            st.write("---")
+            date_add = st.date_input("วันที่บันทึก", datetime.today())
+            
+            # ปุ่มบันทึกทั้งหมด
+            if st.form_submit_button("💾 ยืนยันและบันทึกทั้งหมดลง Drive/Sheet"):
+                progress_save = st.progress(0)
+                status_save = st.empty()
+                
+                success_count = 0
+                for i, item in enumerate(st.session_state['scanned_data']):
+                    status_save.text(f"กำลังอัปโหลดรูปที่ {i+1}...")
+                    
                     try:
-                        # 1. เตรียมชื่อไฟล์
+                        final = item['final_data']
+                        
+                        # Prepare File Name
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        file_name = f"Cactus_{pot_number}_{timestamp}.jpg"
+                        fname = f"Cactus_{final['pot']}_{timestamp}_{i}.jpg"
                         
-                        # 2. Upload รูป
-                        # ต้องแปลง PIL Image กลับเป็น BytesIO เพื่อ Upload
+                        # Upload Image
                         img_byte_arr = io.BytesIO()
-                        image.save(img_byte_arr, format='JPEG')
-                        drive_link = upload_to_drive(img_byte_arr, file_name)
+                        item['img_obj'].save(img_byte_arr, format='JPEG')
+                        link = upload_to_drive(img_byte_arr, fname)
                         
-                        # 3. Save ลง Sheets
-                        # ลำดับคอลัมน์: [วันที่, หมายเลข, สายพันธุ์, ชื่อไทย, ลิงก์รูป]
-                        row_data = [
-                            str(date_added),
-                            pot_number,
-                            species,
-                            thai_name,
-                            drive_link
-                        ]
-                        append_to_sheet(row_data)
-                        
-                        st.success(f"บันทึกข้อมูลต้นที่ {pot_number} เรียบร้อยแล้ว!")
-                        # Clear session state เพื่อเริ่มต้นใหม่ถ้าต้องการ
-                        del st.session_state['ai_result']
+                        # Append Sheet
+                        row = [str(date_add), final['pot'], final['spec'], final['thai'], link]
+                        append_to_sheet(row)
+                        success_count += 1
                         
                     except Exception as e:
-                        st.error(f"เกิดข้อผิดพลาด: {e}")
+                        st.error(f"บันทึกรูปที่ {i+1} ไม่สำเร็จ: {e}")
+                    
+                    progress_save.progress((i + 1) / len(st.session_state['scanned_data']))
+                
+                if success_count == len(st.session_state['scanned_data']):
+                    st.success(f"🎉 บันทึกครบ {success_count} รายการเรียบร้อยแล้ว!")
+                    st.session_state['scanned_data'] = [] # Clear
+                else:
+                    st.warning(f"บันทึกได้ {success_count} รายการ (มีบางรายการล้มเหลว)")
