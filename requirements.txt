@@ -2,5 +2,5 @@ streamlit
 pandas
 google-api-python-client
 google-auth
-google-generativeai
+google-generativeai>=0.8.3
 Pillow
