@@ -73,8 +73,8 @@ def get_all_cacti():
         return pd.DataFrame()
 
 def analyze_image(image):
-    # เปลี่ยนมาใช้รุ่น 2.0 Flash Experimental (โควตาเยอะกว่า 2.5)
-    model_name = 'gemini-2.0-flash-exp' 
+    # ใช้ชื่อนี้ครับ เป็นชื่อรุ่นมาตรฐานที่เสถียรที่สุดและโควตาเยอะที่สุด
+    model_name = 'gemini-flash-latest'
     
     try:
         model = genai.GenerativeModel(model_name)
@@ -92,8 +92,7 @@ def analyze_image(image):
         return json.loads(text)
         
     except Exception as e:
-        # ถ้ายัง Error อีก ให้ลองถอยกลับไปใช้รุ่นมาตรฐาน
-        return {"pot_number": "", "species": f"AI Error: {e}", "thai_name": "เปลี่ยนโมเดลในโค้ดเป็น gemini-flash-latest ดูครับ"}
+        return {"pot_number": "", "species": f"Error: {e}", "thai_name": "ไม่สามารถวิเคราะห์ได้"}
 
 # --- 3. ส่วนแสดงผล (UI) ---
 st.title("🌵 Cactus Collector Pro")
