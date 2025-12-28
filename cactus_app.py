@@ -59,23 +59,39 @@ def append_to_sheet(data_row):
 
 # --- 4. ฟังก์ชันให้ AI อ่านภาพ ---
 def analyze_image(image):
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    prompt = """
-    Analyze this cactus image.
-    1. Read sequence number on pot label (as integer string).
-    2. Identify Species (Scientific Name).
-    3. Identify Thai Name.
-    Return JSON format: {"pot_number": "...", "species": "...", "thai_name": "..."}
-    """
-    response = model.generate_content([prompt, image])
+    # ลองใช้ชื่อแบบระบุ version ล่าสุด
+    model_name = 'gemini-1.5-flash-latest'
+    
     try:
+        model = genai.GenerativeModel(model_name)
+        prompt = """
+        Analyze this cactus image.
+        1. Read sequence number on pot label (as integer string).
+        2. Identify Species (Scientific Name).
+        3. Identify Thai Name.
+        Return JSON format: {"pot_number": "...", "species": "...", "thai_name": "..."}
+        """
+        response = model.generate_content([prompt, image])
+        
         text = response.text.strip()
-        # ล้าง format markdown ออกถ้ามี
         if text.startswith("```json"): text = text[7:-3]
         return json.loads(text)
-    except:
-        return {"pot_number": "", "species": "Unknown", "thai_name": "ไม่ทราบชื่อ"}
-
+        
+    except Exception as e:
+        # ถ้า Error ให้แสดงรายชื่อโมเดลที่ใช้ได้จริงขึ้นมาดู
+        st.error(f"เกิดข้อผิดพลาดกับโมเดล {model_name}: {e}")
+        st.warning("กำลังตรวจสอบรายชื่อโมเดลที่ใช้ได้ในระบบของคุณ...")
+        
+        try:
+            available_models = []
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    available_models.append(m.name)
+            st.code(f"รายชื่อโมเดลที่พบ: {available_models}")
+        except:
+            st.error("ไม่สามารถดึงรายชื่อโมเดลได้ เช็ค API Key อีกครั้ง")
+            
+        return {"pot_number": "", "species": "Error", "thai_name": "โปรดดู Error ด้านบน"}
 # --- 5. หน้าจอแอพพลิเคชัน ---
 st.title("🌵 บันทึกข้อมูลแคคตัส (Free Zone)")
 st.caption(f"Storage Bucket: {BUCKET_NAME} (US-Central1)")
