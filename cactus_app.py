@@ -73,8 +73,9 @@ def get_all_cacti():
         return pd.DataFrame()
 
 def analyze_image(image):
-    # ใช้ชื่อนี้ครับ (มีอยู่ในลิสต์ของคุณแน่นอน)
-    model_name = 'gemini-flash-latest'
+    # เปลี่ยนมาใช้รุ่น Pro (เพราะรุ่น Flash โควตาเต็มแล้ว)
+    # รุ่นนี้มีโควตาฟรีแยกต่างหาก 50 ครั้ง/วัน ครับ
+    model_name = 'gemini-pro-latest'
     
     try:
         model = genai.GenerativeModel(model_name)
@@ -85,6 +86,7 @@ def analyze_image(image):
         3. Identify Thai Name.
         Return JSON format: {"pot_number": "...", "species": "...", "thai_name": "..."}
         """
+        # รุ่น Pro อาจจะช้ากว่า Flash นิดหน่อย แต่แม่นยำกว่า
         response = model.generate_content([prompt, image])
         
         text = response.text.strip()
@@ -92,7 +94,7 @@ def analyze_image(image):
         return json.loads(text)
         
     except Exception as e:
-        return {"pot_number": "", "species": f"Error ({model_name}): {e}", "thai_name": "ไม่สามารถวิเคราะห์ได้"}
+        return {"pot_number": "", "species": f"Error ({model_name}): {e}", "thai_name": "โควตาเต็มทุกรุ่นแล้ว"}
 
 # --- 3. ส่วนแสดงผล (UI) ---
 st.title("🌵 Cactus Collector Pro")
