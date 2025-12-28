@@ -48,9 +48,9 @@ def upload_to_drive(file_obj, filename):
 def analyze_image(image):
     # รายชื่อโมเดลที่จะไล่ลองใช้ (เรียงลำดับความแม่นยำ -> ความเร็ว)
     model_candidates = [
-        'gemini-1.5-flash',
-        'gemini-1.5-pro',
-        'gemini-1.0-pro-vision-latest'
+        'gemini-flash-latest',
+        'gemini-2.0-flash-exp',
+        'gemini-1.5-pro-latest'
     ]
     
     prompt = """
