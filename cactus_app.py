@@ -73,33 +73,27 @@ def get_all_cacti():
         return pd.DataFrame()
 
 def analyze_image(image):
-    # ใช้โมเดล 2.5 ที่บัญชีคุณรองรับ
-    model_name = 'gemini-2.5-flash'
+    # เปลี่ยนมาใช้รุ่น 2.0 Flash Experimental (โควตาเยอะกว่า 2.5)
+    model_name = 'gemini-2.0-flash-exp' 
     
     try:
         model = genai.GenerativeModel(model_name)
-        # ปรับ Prompt ให้ฉลาดขึ้น
         prompt = """
-        Role: You are an expert botanist specializing in Cactaceae (Cactus).
-        Task: Analyze this image carefully.
-        
-        1. **Pot Number:** Look for a label/tag in the pot. Read the sequence number (digits). If no tag, return empty string.
-        2. **Species Identification:** Identify the scientific name accurately based on visual characteristics (ribs, spines, shape, patterns).
-        3. **Thai Name:** Provide the common Thai name for this species.
-
-        Output: JSON format strictly.
-        {
-            "pot_number": "...",
-            "species": "...",
-            "thai_name": "..."
-        }
+        Analyze this cactus image.
+        1. Read sequence number on pot label (as integer string).
+        2. Identify Species (Scientific Name).
+        3. Identify Thai Name.
+        Return JSON format: {"pot_number": "...", "species": "...", "thai_name": "..."}
         """
         response = model.generate_content([prompt, image])
+        
         text = response.text.strip()
         if text.startswith("```json"): text = text[7:-3]
         return json.loads(text)
+        
     except Exception as e:
-        return {"pot_number": "", "species": f"AI Error: {e}", "thai_name": ""}
+        # ถ้ายัง Error อีก ให้ลองถอยกลับไปใช้รุ่นมาตรฐาน
+        return {"pot_number": "", "species": f"AI Error: {e}", "thai_name": "เปลี่ยนโมเดลในโค้ดเป็น gemini-flash-latest ดูครับ"}
 
 # --- 3. ส่วนแสดงผล (UI) ---
 st.title("🌵 Cactus Collector Pro")
