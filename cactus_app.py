@@ -70,9 +70,16 @@ def upload_to_drive(file_obj, filename):
     return file.get('webViewLink')
 
 # ฟังก์ชันเรียก AI (Gemini)
+# ฟังก์ชันเรียก AI (Gemini) - แบบวนลูปหาโมเดลที่ใช้ได้
 def analyze_image(image):
-    model = genai.GenerativeModel('gemini-1.5-flash') # ใช้รุ่น Flash เพื่อความเร็ว
-    
+    # รายชื่อโมเดลที่จะไล่ลองใช้ทีละตัว (ตามลำดับที่คุณต้องการ)
+    model_candidates = [
+        'gemini-1.5-flash',          # ชื่อมาตรฐาน (แนะนำใช้ชื่อนี้แทน models/gemini-flash-latest เพราะชัวร์สุด)
+        'gemini-2.0-flash-exp',      # ตัว experimental รุ่นใหม่
+        'gemini-1.5-pro-latest',     # ตัว Pro
+        'gemini-1.5-flash-latest',   # ลองชื่อแบบมี latest
+    ]
+
     prompt = """
     Analyze this image of a cactus in a pot.
     1. Identify the number written on the pot label/tag (it is a sequence number). If not found, return empty string.
@@ -86,16 +93,27 @@ def analyze_image(image):
         "thai_name": "..."
     }
     """
-    
-    response = model.generate_content([prompt, image])
-    try:
-        # พยายามแกะ JSON จาก Text (บางทีโมเดลอาจตอบ Markdown ```json ... ```)
-        text = response.text.strip()
-        if text.startswith("```json"):
-            text = text[7:-3]
-        return json.loads(text)
-    except:
-        return {"pot_number": "", "species": "Unknown", "thai_name": "ไม่ทราบชื่อ"}
+
+    # วนลูปลองโมเดลทีละตัว
+    for model_name in model_candidates:
+        try:
+            # print(f"Trying model: {model_name}...") # เอาไว้ดู log (ถ้าต้องการ)
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content([prompt, image])
+            
+            # ถ้าสำเร็จ ให้แกะ JSON แล้ว return เลย (ไม่ไปต่อตัวอื่น)
+            text = response.text.strip()
+            if text.startswith("```json"):
+                text = text[7:-3]
+            return json.loads(text)
+            
+        except Exception as e:
+            # ถ้าพัง ให้ลองตัวถัดไป
+            print(f"Model {model_name} failed: {e}")
+            continue
+
+    # ถ้าลองครบทุกตัวแล้วยังพังหมด
+    return {"pot_number": "", "species": "Error: AI Failed", "thai_name": "ลองครบทุกโมเดลแล้วไม่สำเร็จ"}
 
 # --- UI Application ---
 st.title("🌵 บันทึกข้อมูลแคคตัส (AI Scanner)")
