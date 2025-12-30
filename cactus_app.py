@@ -13,7 +13,7 @@ import gc
 import re
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="Cactus Manager (Link Rebuilder)", page_icon="🌵", layout="wide")
+st.set_page_config(page_title="Cactus Manager (Auto-Backup)", page_icon="🌵", layout="wide")
 
 BUCKET_NAME = "cactus-free-storage-2025" 
 
@@ -45,53 +45,54 @@ def get_sheet_service():
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# --- 3. ฟังก์ชันสร้างลิงก์ใหม่ (Link Rebuilder) ---
+# --- 3. ฟังก์ชันสร้างลิงก์ใหม่ (Link Rebuilder - แก้รูปไม่ขึ้น) ---
 def rebuild_clean_link(dirty_link):
     dirty_link = str(dirty_link).strip()
-    
-    # 1. ใช้ Regex หาเฉพาะชื่อไฟล์ (Cactus_xxxx.jpg)
-    # หาคำว่า Cactus_ ตามด้วยตัวเลขและวันที่ และจบด้วย .jpg/.png
     match = re.search(r'(Cactus_.*?\.jpg)', dirty_link, re.IGNORECASE)
-    
     if match:
         filename = match.group(1)
-        # สร้างลิงก์ใหม่เองเลย เพื่อความชัวร์ 100%
         return f"https://storage.googleapis.com/{BUCKET_NAME}/{filename}"
-        
-    # ถ้าหาชื่อไฟล์ไม่เจอ ให้คืนค่าเดิมไป (เผื่อเป็นรูปอื่น)
     return dirty_link
 
-# --- 4. AI (Gemini 2.0 Flash Exp + 1.5 Pro) ---
+# --- 4. AI (Priority: 2.0 Exp -> 1.5 Pro -> 1.5 Flash) ---
 def find_working_model():
-    if 'working_model_name' in st.session_state:
-        return st.session_state['working_model_name']
-    
-    # เลี่ยง 1.5-flash ตามคำสั่ง / ใช้ 2.0-exp หรือ 1.5-pro แทน
+    # เรียงลำดับความเทพ (พยายามใช้ตัวบนสุดก่อน)
     candidates = [
-        'gemini-2.0-flash-exp',   # ตัวใหม่ล่าสุด (ฉลาดเท่า 2.5)
-        'gemini-1.5-pro',         # ตัว Pro (ฉลาดแต่ช้ากว่านิดนึง)
-        'gemini-1.5-pro-002'
+        'gemini-2.0-flash-exp',   # เป้าหมายหลัก
+        'gemini-1.5-pro',         # รองลงมา
+        'gemini-1.5-pro-002',     
+        'gemini-1.5-flash'        # ตัวกันตาย (ต้องมี ไม่งั้นแอพดับ)
     ]
     
     status_box = st.empty()
     
     for name in candidates:
         try:
+            # ลองเชื่อมต่อ
             genai.GenerativeModel(name).generate_content("hi")
             st.session_state['working_model_name'] = name
-            status_box.success(f"✅ ใช้โมเดล: {name}")
+            
+            # แจ้งผู้ใช้ว่าตอนนี้ใช้ตัวไหนอยู่
+            if 'flash-exp' in name:
+                status_box.success(f"⚡ ใช้โมเดลตัวเทพ: {name}")
+            elif 'pro' in name:
+                status_box.info(f"🛡️ ใช้โมเดล Pro: {name}")
+            else:
+                status_box.warning(f"⚠️ ตัวเทพโควต้าเต็ม -> ใช้ตัวสำรอง: {name}")
+                
             time.sleep(1)
             status_box.empty()
             return name
         except:
-            continue
+            continue # ถ้าตัวนี้พัง/เต็ม ให้ข้ามไปตัวถัดไปทันที
             
-    status_box.error("❌ ไม่พบโมเดล Pro/Exp ที่ใช้ได้ (Quota อาจเต็มทุกตัว)")
+    status_box.error("❌ ระบบล่ม: โควต้าเต็มทุกโมเดล (กรุณาลองใหม่พรุ่งนี้)")
     return None
 
 def analyze_image(image):
     model_name = find_working_model()
-    if not model_name: return {"pot_number": "", "species": "Quota Exceeded", "thai_name": ""}
+    if not model_name: 
+        return {"pot_number": "", "species": "Quota Exceeded", "thai_name": ""}
     
     try:
         model = genai.GenerativeModel(model_name)
@@ -181,7 +182,7 @@ with tab1:
         
         if 'last_analyzed_file' not in st.session_state or st.session_state['last_analyzed_file'] != uploaded_file.name:
             with c2:
-                with st.spinner('🤖 AI (Exp/Pro) กำลังทำงาน...'):
+                with st.spinner('🤖 AI กำลังทำงาน...'):
                     st.session_state['ai_result'] = analyze_image(image)
                     st.session_state['last_analyzed_file'] = uploaded_file.name
                 
@@ -189,7 +190,7 @@ with tab1:
             data = st.session_state['ai_result']
             with c2:
                 if "Error" in str(data.get('species', '')):
-                    st.warning(f"{data.get('species')}")
+                    st.warning(f"AI Warning: {data.get('species')}")
 
                 with st.form("save_form"):
                     f_c1, f_c2 = st.columns(2)
@@ -242,7 +243,7 @@ with tab2:
                     with cols[0]:
                         raw_link = row.get('Image Link', '')
                         
-                        # 🔥 สร้างลิงก์ใหม่จากชื่อไฟล์ (แก้ปัญหาลิงก์ขยะ 100%)
+                        # สร้างลิงก์ใหม่จากชื่อไฟล์ (แก้ปัญหาลิงก์เสีย)
                         clean_link = rebuild_clean_link(raw_link)
                         
                         if "http" in clean_link:
@@ -250,7 +251,7 @@ with tab2:
                                 f'<img src="{clean_link}" style="width:100%; max-width:200px; border-radius:8px; border:1px solid #ccc;">', 
                                 unsafe_allow_html=True
                             )
-                            st.caption(f"File: {clean_link.split('/')[-1]}")
+                            # ลิงก์กดดูรูปจริง
                             st.markdown(f"[🔗 เปิดรูป]({clean_link})")
                         else: 
                             st.warning("No Image")
