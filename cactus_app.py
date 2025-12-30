@@ -10,10 +10,10 @@ import io
 import json
 import time
 import gc
-import re # เพิ่ม Library สำหรับกรองคำ
+import re
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="Cactus Manager (Cleaner)", page_icon="🌵", layout="wide")
+st.set_page_config(page_title="Cactus Manager (Link Rebuilder)", page_icon="🌵", layout="wide")
 
 BUCKET_NAME = "cactus-free-storage-2025" 
 
@@ -45,37 +45,54 @@ def get_sheet_service():
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# --- 3. ฟังก์ชันล้างลิงก์เสีย (พระเอกของงานนี้) ---
-def clean_image_link(raw_link):
-    raw_link = str(raw_link).strip()
+# --- 3. ฟังก์ชันสร้างลิงก์ใหม่ (Link Rebuilder) ---
+def rebuild_clean_link(dirty_link):
+    dirty_link = str(dirty_link).strip()
     
-    # ถ้าลิงก์ดูปกติอยู่แล้ว ก็คืนค่าเดิม
-    if raw_link.startswith("http") and "[" not in raw_link:
-        return raw_link
-        
-    # ถ้าลิงก์เละ (มี [] หรือขยะปนมา) ให้ใช้ Regex สกัดหา Pattern ของ URL
-    # หาข้อความที่ขึ้นต้นด้วย https:// และจบด้วย .jpg หรือ .jpeg หรือ .png
-    match = re.search(r'(https://storage\.googleapis\.com/.*?\.(?:jpg|jpeg|png))', raw_link, re.IGNORECASE)
+    # 1. ใช้ Regex หาเฉพาะชื่อไฟล์ (Cactus_xxxx.jpg)
+    # หาคำว่า Cactus_ ตามด้วยตัวเลขและวันที่ และจบด้วย .jpg/.png
+    match = re.search(r'(Cactus_.*?\.jpg)', dirty_link, re.IGNORECASE)
     
     if match:
-        return match.group(1) # คืนค่าเฉพาะลิงก์ที่สะอาดแล้ว
-    
-    # ถ้ากู้ไม่ได้จริงๆ ให้ลองตัดส่วน Bucket Name มาต่อใหม่ (ท่าไม้ตายแก้ขยะ)
-    if BUCKET_NAME in raw_link:
-        try:
-            # ตัดเอาเฉพาะส่วนหลังชื่อ Bucket
-            part = raw_link.split(BUCKET_NAME)[-1]
-            # ลบเครื่องหมาย / หรือ \ ที่เกินมาด้านหน้า
-            clean_path = part.lstrip("/").lstrip("\\")
-            return f"https://storage.googleapis.com/{BUCKET_NAME}/{clean_path}"
-        except:
-            pass
-            
-    return raw_link
+        filename = match.group(1)
+        # สร้างลิงก์ใหม่เองเลย เพื่อความชัวร์ 100%
+        return f"https://storage.googleapis.com/{BUCKET_NAME}/{filename}"
+        
+    # ถ้าหาชื่อไฟล์ไม่เจอ ให้คืนค่าเดิมไป (เผื่อเป็นรูปอื่น)
+    return dirty_link
 
-# --- 4. AI (Hardcoded Gemini 2.5 Only) ---
+# --- 4. AI (Gemini 2.0 Flash Exp + 1.5 Pro) ---
+def find_working_model():
+    if 'working_model_name' in st.session_state:
+        return st.session_state['working_model_name']
+    
+    # เลี่ยง 1.5-flash ตามคำสั่ง / ใช้ 2.0-exp หรือ 1.5-pro แทน
+    candidates = [
+        'gemini-2.0-flash-exp',   # ตัวใหม่ล่าสุด (ฉลาดเท่า 2.5)
+        'gemini-1.5-pro',         # ตัว Pro (ฉลาดแต่ช้ากว่านิดนึง)
+        'gemini-1.5-pro-002'
+    ]
+    
+    status_box = st.empty()
+    
+    for name in candidates:
+        try:
+            genai.GenerativeModel(name).generate_content("hi")
+            st.session_state['working_model_name'] = name
+            status_box.success(f"✅ ใช้โมเดล: {name}")
+            time.sleep(1)
+            status_box.empty()
+            return name
+        except:
+            continue
+            
+    status_box.error("❌ ไม่พบโมเดล Pro/Exp ที่ใช้ได้ (Quota อาจเต็มทุกตัว)")
+    return None
+
 def analyze_image(image):
-    model_name = 'gemini-2.5-flash' # บังคับตัวนี้ตัวเดียว
+    model_name = find_working_model()
+    if not model_name: return {"pot_number": "", "species": "Quota Exceeded", "thai_name": ""}
+    
     try:
         model = genai.GenerativeModel(model_name)
         prompt = """
@@ -90,7 +107,7 @@ def analyze_image(image):
         if text.startswith("```json"): text = text[7:-3]
         return json.loads(text)
     except Exception as e:
-        return {"pot_number": "", "species": f"Error ({model_name}): {e}", "thai_name": ""}
+        return {"pot_number": "", "species": f"Error: {e}", "thai_name": ""}
 
 # --- 5. Services ---
 def append_to_sheet(data_row):
@@ -164,7 +181,7 @@ with tab1:
         
         if 'last_analyzed_file' not in st.session_state or st.session_state['last_analyzed_file'] != uploaded_file.name:
             with c2:
-                with st.spinner('🤖 AI (Gemini 2.5) กำลังทำงาน...'):
+                with st.spinner('🤖 AI (Exp/Pro) กำลังทำงาน...'):
                     st.session_state['ai_result'] = analyze_image(image)
                     st.session_state['last_analyzed_file'] = uploaded_file.name
                 
@@ -224,20 +241,19 @@ with tab2:
                     
                     with cols[0]:
                         raw_link = row.get('Image Link', '')
-                        # 🔥 เรียกใช้ฟังก์ชันล้างลิงก์ที่นี่ 🔥
-                        img_link = clean_image_link(raw_link)
                         
-                        if "http" in img_link:
+                        # 🔥 สร้างลิงก์ใหม่จากชื่อไฟล์ (แก้ปัญหาลิงก์ขยะ 100%)
+                        clean_link = rebuild_clean_link(raw_link)
+                        
+                        if "http" in clean_link:
                             st.markdown(
-                                f'<img src="{img_link}" style="width:100%; max-width:200px; border-radius:8px; border:1px solid #ccc;">', 
+                                f'<img src="{clean_link}" style="width:100%; max-width:200px; border-radius:8px; border:1px solid #ccc;">', 
                                 unsafe_allow_html=True
                             )
-                            # แสดงลิงก์ให้ดูด้วย (เผื่อเช็คว่าสะอาดจริงไหม)
-                            st.caption(f"Clean Link: {img_link[-20:]}...") 
-                            st.markdown(f"[🔗 เปิดรูปเต็ม]({img_link})")
+                            st.caption(f"File: {clean_link.split('/')[-1]}")
+                            st.markdown(f"[🔗 เปิดรูป]({clean_link})")
                         else: 
                             st.warning("No Image")
-                            st.caption(f"Raw Data: {str(raw_link)[:30]}...") # Debug ดูขยะ
                     
                     with cols[1]:
                         with st.form(f"edit_{i}"):
