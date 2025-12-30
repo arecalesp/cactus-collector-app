@@ -102,7 +102,7 @@ def find_working_model():
     if 'working_model_name' in st.session_state: return st.session_state['working_model_name']
     try:
         # พยายามใช้รุ่น Flash ที่เสถียรที่สุดก่อน
-        preferred = ['gemini-1.5-flash-002', 'gemini-1.5-flash', 'gemini-1.5-flash-001']
+        preferred = ['gemini-3-pro-preview', 'gemini-1.5-flash-002', 'gemini-1.5-flash', 'gemini-1.5-flash-001']
         available = [m.name for m in genai.list_models()]
         
         for p in preferred:
