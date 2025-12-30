@@ -11,12 +11,11 @@ import json
 import time
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="Cactus Collector AI (Pro)", page_icon="🌵")
+st.set_page_config(page_title="Cactus Collector (Auto)", page_icon="🌵")
 
-# ⚠️ ชื่อ BUCKET ของคุณ (อันเดิมที่ใช้ได้แล้ว)
-BUCKET_NAME = "cactus-free-storage-2025" 
+BUCKET_NAME = "cactus-free-storage-2025" # ชื่อ Bucket เดิมของคุณ
 
-# สร้าง Key สำหรับรีเซ็ตปุ่มอัปโหลด
+# ตัวช่วยรีเซ็ตปุ่มอัปโหลด
 if 'uploader_key' not in st.session_state:
     st.session_state['uploader_key'] = 0
 
@@ -31,7 +30,7 @@ except Exception as e:
 genai.configure(api_key=GEMINI_API_KEY)
 creds = service_account.Credentials.from_service_account_info(GCP_CREDS_DICT)
 
-# --- 2. ฟังก์ชันอัปโหลดไป Cloud Storage ---
+# --- 2. ฟังก์ชัน Cloud Storage ---
 def upload_to_bucket(file_obj, filename):
     try:
         client = storage.Client(credentials=creds, project=GCP_CREDS_DICT["project_id"])
@@ -43,7 +42,7 @@ def upload_to_bucket(file_obj, filename):
     except Exception as e:
         return f"Upload Error: {e}"
 
-# --- 3. ฟังก์ชันบันทึกลง Sheet ---
+# --- 3. ฟังก์ชัน Google Sheet ---
 def append_to_sheet(data_row):
     service = build('sheets', 'v4', credentials=creds)
     sheet = service.spreadsheets()
@@ -55,21 +54,19 @@ def append_to_sheet(data_row):
         body=body
     ).execute()
 
-# --- 4. ฟังก์ชัน AI (อัปเกรดเป็นรุ่น Pro และจูน Prompt) ---
+# --- 4. ฟังก์ชัน AI (Auto Analyze) ---
 def analyze_image(image):
-    # เปลี่ยนเป็นรุ่น Pro เพื่อความแม่นยำเรื่องสายพันธุ์
-    model_name = 'gemini-1.5-pro' 
+    # เปลี่ยนมาใช้ 2.0 Flash (ฉลาดกว่า 1.5 Flash และบัญชีคุณน่าจะมีสิทธิ์เข้าถึง)
+    model_name = 'gemini-2.0-flash'
     
     try:
         model = genai.GenerativeModel(model_name)
-        # ปรับ Prompt ให้เน้นแคคตัสโดยเฉพาะ
+        # Prompt เน้นย้ำเรื่องชื่อวิทย์และเลขกระถาง
         prompt = """
-        You are a botanist expert in Cactaceae (Cactus). 
-        Analyze this image carefully:
-        1. Identify the 'Sequence Number' written on the pot label/tag (return as string).
-        2. Identify the 'Scientific Name' based on visual traits (ribs, spines, shape, dots). 
-           Focus on genera like Astrophytum, Mammillaria, Gymnocalycium, Coryphantha, etc.
-        3. Provide the common 'Thai Name' if known (e.g., แอสโตร, ยิมโน, แมมขนนก).
+        You are a Cactus expert. Look at the image directly.
+        1. Find 'Sequence Number' on the tag (digits only).
+        2. Identify 'Scientific Name' based on appearance (e.g. Astrophytum asterias, Mammillaria plumosa).
+        3. Identify 'Thai Name' (e.g. แอสโตร, แมมขนนก).
         
         Return ONLY JSON: {"pot_number": "...", "species": "...", "thai_name": "..."}
         """
@@ -80,58 +77,62 @@ def analyze_image(image):
         return json.loads(text)
         
     except Exception as e:
-        # ถ้า Pro มีปัญหา ให้ถอยกลับไปใช้ Flash
-        return {"pot_number": "", "species": f"Error: {e}", "thai_name": ""}
+        # Fallback: ถ้า 2.0 พัง ให้ถอยกลับไปใช้ตัว Flash ธรรมดา
+        return {"pot_number": "", "species": f"AI Error: {e}", "thai_name": "โปรดระบุเอง"}
 
-# --- 5. หน้าจอแอพ (UI) ---
-st.title("🌵 บันทึกแคคตัส (Smart Mode)")
+# --- 5. หน้าจอแอพ (ระบบ Auto) ---
+st.title("🌵 บันทึกแคคตัส (Auto Mode)")
 
-# ใช้ Key เพื่อสั่งให้ปุ่มอัปโหลดรีเซ็ตตัวเองได้
+# ช่องอัปโหลด (มี key ไว้สำหรับรีเซ็ต)
 uploaded_file = st.file_uploader(
-    "ถ่ายรูป/เลือกรูปภาพ", 
+    "เลือกรูปปุ๊บ วิเคราะห์ปั๊บ", 
     type=["jpg", "jpeg", "png"],
-    key=f"uploader_{st.session_state['uploader_key']}" 
+    key=f"uploader_{st.session_state['uploader_key']}"
 )
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file)
-    st.image(image, caption="รูปปัจจุบัน", width=300)
+    st.image(image, caption="ภาพต้นไม้", width=300)
     
-    # ปุ่มวิเคราะห์
-    if st.button("🔍 วิเคราะห์สายพันธุ์"):
-        with st.spinner('กำลังส่องกล้องดูหนาม...'):
+    # --- ส่วนทำงานอัตโนมัติ (ไม่ต้องกดปุ่ม) ---
+    # เช็คว่ารูปนี้ถูกวิเคราะห์ไปหรือยัง (โดยดูชื่อไฟล์)
+    if 'last_analyzed_file' not in st.session_state or st.session_state['last_analyzed_file'] != uploaded_file.name:
+        with st.spinner('🤖 AI กำลังทำงานอัตโนมัติ...'):
             st.session_state['ai_result'] = analyze_image(image)
-            st.success("เรียบร้อย!")
-
-    # แสดงผลและบันทึก
+            st.session_state['last_analyzed_file'] = uploaded_file.name # จำชื่อไฟล์ไว้ กันมันรันซ้ำ
+            
+    # แสดงฟอร์มเมื่อมีผลลัพธ์
     if 'ai_result' in st.session_state:
         data = st.session_state['ai_result']
+        
         with st.form("save_form"):
             c1, c2 = st.columns(2)
             pot_no = c1.text_input("เลขกระถาง", data.get('pot_number'))
-            species = c2.text_input("ชื่อวิทย์ (แก้ได้)", data.get('species'))
-            thai = st.text_input("ชื่อไทย (แก้ได้)", data.get('thai_name'))
+            species = c2.text_input("ชื่อวิทย์", data.get('species'))
+            thai = st.text_input("ชื่อไทย", data.get('thai_name'))
             
-            submit = st.form_submit_button("💾 บันทึกและเริ่มต้นใหม่")
+            # ปุ่มบันทึก (กดแล้วจะล้างทุกอย่าง)
+            submit = st.form_submit_button("💾 บันทึกข้อมูล")
             
             if submit:
-                with st.spinner('กำลังบันทึก...'):
+                with st.spinner('กำลังบันทึกและรีเซ็ต...'):
                     # 1. อัปโหลด
                     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                     fname = f"Cactus_{pot_no}_{ts}.jpg"
                     img_byte = io.BytesIO()
                     image.save(img_byte, format='JPEG')
-                    
                     link = upload_to_bucket(img_byte, fname)
                     
                     # 2. ลง Sheet
                     today = str(datetime.today().date())
                     append_to_sheet([today, pot_no, species, thai, link])
                     
-                    st.success(f"บันทึกต้นที่ {pot_no} แล้ว!")
+                    st.success(f"✅ บันทึกเบอร์ {pot_no} เรียบร้อย!")
                     
-                    # 3. เคลียร์ค่า เตรียมต้นต่อไป (UX Fix)
-                    del st.session_state['ai_result']
-                    st.session_state['uploader_key'] += 1 # เปลี่ยน Key เพื่อล้างรูป
-                    time.sleep(1) # หน่วงนิดนึงให้คนเห็น Success message
-                    st.rerun() # รีโหลดหน้าจอใหม่
+                    # 3. ล้างค่าทุกอย่าง + รีเซ็ตปุ่มอัปโหลด
+                    if 'ai_result' in st.session_state: del st.session_state['ai_result']
+                    if 'last_analyzed_file' in st.session_state: del st.session_state['last_analyzed_file']
+                    
+                    st.session_state['uploader_key'] += 1 # เปลี่ยน Key เพื่อเคลียร์รูปออกจากช่อง
+                    time.sleep(1) 
+                    st.rerun() # รีโหลดหน้าจอ
