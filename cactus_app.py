@@ -58,6 +58,7 @@ def rebuild_clean_link(dirty_link):
 def find_working_model():
     # ลองรุ่นอื่นๆ ที่ไม่ใช่ 1.5-flash ตัวเก่า
     candidates = [
+        'gemini-2.5-flash',   # เป้าหมายหลัก
         'gemini-2.0-flash-exp',   # เป้าหมายหลัก
         'gemini-1.5-flash-8b',    # รุ่น 8B (รุ่นเล็ก อาจมีโควต้าเหลือ)
         'gemini-1.5-pro-002',
