@@ -12,7 +12,7 @@ import time
 import gc
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="Cactus Manager (Fixed Image)", page_icon="🌵", layout="wide")
+st.set_page_config(page_title="Cactus Manager (Anti-Crash)", page_icon="🌵", layout="wide")
 
 BUCKET_NAME = "cactus-free-storage-2025" 
 
@@ -44,20 +44,45 @@ def get_sheet_service():
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# --- 3. AI ---
+# --- 3. AI (รวม Brute Force + Fast Check) ---
 def find_working_model():
     if 'working_model_name' in st.session_state:
         return st.session_state['working_model_name']
     
-    # ลอง Flash 2.5 ก่อน
-    candidates = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-001']
+    # ลองตัวที่น่าจะเวิร์คก่อน
+    candidates = [
+        'gemini-2.5-flash', 
+        'gemini-1.5-flash', 
+        'gemini-1.5-flash-001',
+        'gemini-1.5-flash-002',
+        'gemini-pro'
+    ]
+    
+    status = st.empty()
+    # 1. Fast Check
     for name in candidates:
         try:
             genai.GenerativeModel(name).generate_content("hi")
             st.session_state['working_model_name'] = name
             return name
         except: continue
-    return 'gemini-1.5-flash'
+    
+    # 2. Brute Force (ถ้าตัวบนใช้ไม่ได้เลย ให้สแกนหมด)
+    try:
+        status.info("📡 Scanning all models...")
+        all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        for m_name in all_models:
+            name = m_name.replace('models/', '')
+            try:
+                genai.GenerativeModel(name).generate_content("hi")
+                st.session_state['working_model_name'] = name
+                status.empty()
+                return name
+            except: continue
+    except: pass
+
+    status.empty()
+    return 'gemini-1.5-flash' # Fallback สุดท้าย
 
 def analyze_image(image):
     model_name = find_working_model()
@@ -121,11 +146,9 @@ def upload_to_bucket(file_obj, filename):
         file_obj.seek(0)
         blob.upload_from_file(file_obj, content_type='image/jpeg')
         
-        # ⚠️ พยายามสั่งเปิด Public (อาจจะติด Permission ในบางเคส แต่ใส่ไว้ก่อน)
-        try:
-            blob.make_public()
-        except:
-            pass # ถ้าไม่ได้ เดี๋ยวไปแก้ที่ Console เอา
+        # ⚠️ Force Public (สำคัญมาก เพื่อให้ st.image อ่านได้)
+        try: blob.make_public()
+        except: pass 
             
         return f"[https://storage.googleapis.com/](https://storage.googleapis.com/){BUCKET_NAME}/{filename}"
     except Exception as e:
@@ -185,6 +208,7 @@ with tab1:
                                 today = str(datetime.today().date())
                                 append_to_sheet([today, pot_no, species, thai, link])
                                 st.success("✅ บันทึกสำเร็จ!")
+                                
                                 del st.session_state['ai_result']
                                 del st.session_state['last_analyzed_file']
                                 st.session_state['uploader_key'] += 1
@@ -214,16 +238,22 @@ with tab2:
                 with st.container(border=True):
                     cols = st.columns([1, 3])
                     
-                    # --- ส่วนแสดงรูปที่แก้แล้ว ---
+                    # --- จุดแก้ Error แครช ---
                     with cols[0]:
                         img_link = str(row.get('Image Link', '')).strip()
-                        # แก้ไข: ใช้ 'in' แทน startswith เพื่อความยืดหยุ่น และเช็คความยาว
+                        
+                        # เช็คว่าเป็น Link
                         if "http" in img_link and len(img_link) > 10:
-                            st.image(img_link, use_container_width=True)
+                            # 🛡️ ใส่เกราะป้องกันตรงนี้ 🛡️
+                            try:
+                                st.image(img_link, use_container_width=True)
+                            except Exception as e:
+                                # ถ้าโหลดไม่ได้ จะไม่แครช แต่ขึ้นเตือนแทน
+                                st.warning("⚠️ แสดงผลไม่ได้")
+                                st.caption("ลิงก์อาจเป็น Private หรือไฟล์เสีย")
+                                st.markdown(f"[คลิกเพื่อดูรูปต้นฉบับ]({img_link})")
                         else: 
                             st.warning("No Image")
-                            # แสดงข้อมูลดิบให้ดู จะได้รู้ว่า sheet ส่งอะไรมา
-                            st.caption(f"Raw: {img_link}") 
                             
                     with cols[1]:
                         with st.form(f"edit_{i}"):
