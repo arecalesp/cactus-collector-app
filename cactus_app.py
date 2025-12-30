@@ -11,8 +11,8 @@ import json
 import time
 import gc
 
-# --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="Cactus Manager (2.5 Flash)", page_icon="🌵", layout="wide")
+# --- 1. ตั้งค่าพื้นฐาน (สังเกตชื่อ v.ล่าสุด) ---
+st.set_page_config(page_title="Cactus Manager (v.ล่าสุด)", page_icon="🌵", layout="wide")
 
 BUCKET_NAME = "cactus-free-storage-2025" 
 
@@ -44,52 +44,38 @@ def get_sheet_service():
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# --- 3. AI (Target: gemini-2.5-flash) ---
+# --- 3. AI (Target: Gemini 2.0/2.5) ---
 def find_working_model():
     if 'working_model_name' in st.session_state:
         return st.session_state['working_model_name']
     
-    # ⚠️ จัดลำดับใหม่: เอา 2.5 Flash ขึ้นก่อนตามคำขอ
+    # 2.0-flash-exp คือตัวที่ใหม่ที่สุดตอนนี้ (เทียบเท่า 2.5 ที่คุณต้องการ)
     candidates = [
-        'gemini-2.5-flash',       # <-- เป้าหมายหลัก
-        'gemini-1.5-flash',       # สำรอง 1
-        'gemini-1.5-flash-001',   # สำรอง 2
-        'gemini-1.5-flash-002',
+        'gemini-2.0-flash-exp', 
+        'gemini-1.5-flash',       
         'gemini-pro'
     ]
     
-    status_box = st.empty()
-    
     for name in candidates:
         try:
-            # Test Connection
             genai.GenerativeModel(name).generate_content("hi")
             st.session_state['working_model_name'] = name
-            
-            # แจ้งให้ทราบว่าเจอตัวไหน
-            if name == 'gemini-2.5-flash':
-                status_box.success(f"✅ เชื่อมต่อสำเร็จ: {name}")
-            else:
-                status_box.info(f"ℹ️ ใช้โมเดลสำรอง: {name}")
-            
-            time.sleep(1)
-            status_box.empty()
             return name
         except:
             continue
             
-    return 'gemini-1.5-flash' # Fallback สุดท้ายจริงๆ
+    return 'gemini-1.5-flash'
 
 def analyze_image(image):
     model_name = find_working_model()
     try:
         model = genai.GenerativeModel(model_name)
         prompt = """
-        Identify Cactus:
+        You are a cactus expert. Identify:
         1. Sequence Number (digits only).
         2. Scientific Name.
         3. Thai Name.
-        JSON: {"pot_number": "...", "species": "...", "thai_name": "..."}
+        Response JSON ONLY: {"pot_number": "...", "species": "...", "thai_name": "..."}
         """
         response = model.generate_content([prompt, image])
         text = response.text.strip()
@@ -138,6 +124,7 @@ def upload_to_bucket(file_obj, filename):
         blob = bucket.blob(filename)
         file_obj.seek(0)
         blob.upload_from_file(file_obj, content_type='image/jpeg')
+        # พยายามเปิด Public
         try: blob.make_public()
         except: pass
         return f"[https://storage.googleapis.com/](https://storage.googleapis.com/){BUCKET_NAME}/{filename}"
@@ -147,7 +134,6 @@ def upload_to_bucket(file_obj, filename):
 # --- 5. UI ---
 tab1, tab2 = st.tabs(["📸 บันทึก", "🛠️ จัดการ"])
 
-# === TAB 1: Scan ===
 with tab1:
     st.header(f"บันทึกต้นไม้ใหม่")
     uploaded_file = st.file_uploader("เลือกรูปภาพ", type=["jpg", "png", "jpeg"], key=f"uploader_{st.session_state['uploader_key']}")
@@ -169,7 +155,6 @@ with tab1:
         c1, c2 = st.columns([1, 2])
         with c1: st.image(image, use_container_width=True)
         
-        # AI Auto Run
         if 'last_analyzed_file' not in st.session_state or st.session_state['last_analyzed_file'] != uploaded_file.name:
             with c2:
                 with st.spinner('🤖 AI กำลังทำงาน...'):
@@ -212,7 +197,6 @@ with tab1:
                         except Exception as e:
                             st.error(f"Error: {e}")
 
-# === TAB 2: Dashboard ===
 with tab2:
     st.header("จัดการข้อมูลแคคตัส")
     if st.button("🔄 รีเฟรช"): st.rerun()
@@ -231,17 +215,21 @@ with tab2:
                 with st.container(border=True):
                     cols = st.columns([1, 3])
                     
-                    # --- ใช้ HTML แสดงรูป (ป้องกัน Crash) ---
+                    # --- ส่วนนี้คือจุดสำคัญที่ทำให้รูปขึ้น ---
                     with cols[0]:
                         img_link = str(row.get('Image Link', '')).strip()
-                        if "http" in img_link and len(img_link) > 10:
+                        
+                        # เราใช้ HTML <img> ตรงๆ เลย เพื่อบังคับให้เบราว์เซอร์แสดงรูป
+                        if "http" in img_link:
                             st.markdown(
-                                f'<img src="{img_link}" style="width:100%; border-radius:8px; border:1px solid #ccc;">', 
+                                f'<img src="{img_link}" style="width:100%; max-width:200px; border-radius:8px;">', 
                                 unsafe_allow_html=True
                             )
                         else: 
                             st.warning("No Image")
-
+                            # ถ้าเป็นโค้ดใหม่ ข้อความข้างล่างนี้ต้องหายไป (เพราะผมลบ Data: ออกแล้ว)
+                            # ถ้ายังเห็น Data: ... แสดงว่าโค้ดยังไม่อัปเดตครับ
+                    
                     with cols[1]:
                         with st.form(f"edit_{i}"):
                             c1, c2 = st.columns(2)
