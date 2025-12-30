@@ -12,7 +12,7 @@ import time
 import gc
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="Cactus Manager (Final Fix)", page_icon="🌵", layout="wide")
+st.set_page_config(page_title="Cactus Manager (2.5 Flash)", page_icon="🌵", layout="wide")
 
 BUCKET_NAME = "cactus-free-storage-2025" 
 
@@ -44,19 +44,41 @@ def get_sheet_service():
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# --- 3. AI ---
+# --- 3. AI (Target: gemini-2.5-flash) ---
 def find_working_model():
     if 'working_model_name' in st.session_state:
         return st.session_state['working_model_name']
     
-    candidates = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-flash-001', 'gemini-pro']
+    # ⚠️ จัดลำดับใหม่: เอา 2.5 Flash ขึ้นก่อนตามคำขอ
+    candidates = [
+        'gemini-2.5-flash',       # <-- เป้าหมายหลัก
+        'gemini-1.5-flash',       # สำรอง 1
+        'gemini-1.5-flash-001',   # สำรอง 2
+        'gemini-1.5-flash-002',
+        'gemini-pro'
+    ]
+    
+    status_box = st.empty()
+    
     for name in candidates:
         try:
+            # Test Connection
             genai.GenerativeModel(name).generate_content("hi")
             st.session_state['working_model_name'] = name
+            
+            # แจ้งให้ทราบว่าเจอตัวไหน
+            if name == 'gemini-2.5-flash':
+                status_box.success(f"✅ เชื่อมต่อสำเร็จ: {name}")
+            else:
+                status_box.info(f"ℹ️ ใช้โมเดลสำรอง: {name}")
+            
+            time.sleep(1)
+            status_box.empty()
             return name
-        except: continue
-    return 'gemini-1.5-flash'
+        except:
+            continue
+            
+    return 'gemini-1.5-flash' # Fallback สุดท้ายจริงๆ
 
 def analyze_image(image):
     model_name = find_working_model()
@@ -92,10 +114,7 @@ def load_data_from_sheet():
         values = result.get('values', [])
         if not values: return pd.DataFrame()
         headers = ['Date', 'Pot No', 'Species', 'Thai Name', 'Image Link', 'Note']
-        cleaned_data = []
-        for row in values[1:]:
-            new_row = row[:6] + [""] * (6 - len(row))
-            cleaned_data.append(new_row)
+        cleaned_data = [row[:6] + [""] * (6 - len(row)) for row in values[1:]]
         return pd.DataFrame(cleaned_data, columns=headers)
     except:
         return pd.DataFrame(columns=['Date', 'Pot No', 'Species', 'Thai Name', 'Image Link', 'Note'])
@@ -119,6 +138,8 @@ def upload_to_bucket(file_obj, filename):
         blob = bucket.blob(filename)
         file_obj.seek(0)
         blob.upload_from_file(file_obj, content_type='image/jpeg')
+        try: blob.make_public()
+        except: pass
         return f"[https://storage.googleapis.com/](https://storage.googleapis.com/){BUCKET_NAME}/{filename}"
     except Exception as e:
         return f"Error: {e}"
@@ -126,6 +147,7 @@ def upload_to_bucket(file_obj, filename):
 # --- 5. UI ---
 tab1, tab2 = st.tabs(["📸 บันทึก", "🛠️ จัดการ"])
 
+# === TAB 1: Scan ===
 with tab1:
     st.header(f"บันทึกต้นไม้ใหม่")
     uploaded_file = st.file_uploader("เลือกรูปภาพ", type=["jpg", "png", "jpeg"], key=f"uploader_{st.session_state['uploader_key']}")
@@ -147,16 +169,19 @@ with tab1:
         c1, c2 = st.columns([1, 2])
         with c1: st.image(image, use_container_width=True)
         
+        # AI Auto Run
         if 'last_analyzed_file' not in st.session_state or st.session_state['last_analyzed_file'] != uploaded_file.name:
             with c2:
-                status = st.info(f"🤖 AI Working...")
-                st.session_state['ai_result'] = analyze_image(image)
-                st.session_state['last_analyzed_file'] = uploaded_file.name
-                status.empty()
+                with st.spinner('🤖 AI กำลังทำงาน...'):
+                    st.session_state['ai_result'] = analyze_image(image)
+                    st.session_state['last_analyzed_file'] = uploaded_file.name
                 
         if 'ai_result' in st.session_state:
             data = st.session_state['ai_result']
             with c2:
+                if "Error" in str(data.get('species', '')):
+                    st.warning(f"AI Error: {data.get('species')}")
+
                 with st.form("save_form"):
                     f_c1, f_c2 = st.columns(2)
                     pot_no = f_c1.text_input("เลขกระถาง", data.get('pot_number'))
@@ -168,7 +193,6 @@ with tab1:
                             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                             img_byte = io.BytesIO()
                             image.save(img_byte, format='JPEG', quality=70)
-                            
                             link = upload_to_bucket(img_byte, f"Cactus_{pot_no}_{ts}.jpg")
                             
                             if "Error" in link:
@@ -188,6 +212,7 @@ with tab1:
                         except Exception as e:
                             st.error(f"Error: {e}")
 
+# === TAB 2: Dashboard ===
 with tab2:
     st.header("จัดการข้อมูลแคคตัส")
     if st.button("🔄 รีเฟรช"): st.rerun()
@@ -206,20 +231,17 @@ with tab2:
                 with st.container(border=True):
                     cols = st.columns([1, 3])
                     
-                    # --- จุดเปลี่ยนสำคัญ: ใช้ HTML แสดงรูปแทน st.image ---
+                    # --- ใช้ HTML แสดงรูป (ป้องกัน Crash) ---
                     with cols[0]:
                         img_link = str(row.get('Image Link', '')).strip()
-                        
                         if "http" in img_link and len(img_link) > 10:
-                            # ใช้ HTML <img> tag ตรงๆ เลย บังคับเบราว์เซอร์โหลดเอง
-                            # วิธีนี้จะไม่ผ่าน Python Backend ทำให้ไม่แครชแน่นอน
                             st.markdown(
-                                f'<img src="{img_link}" style="width:100%; border-radius:10px; border:1px solid #ddd;">', 
+                                f'<img src="{img_link}" style="width:100%; border-radius:8px; border:1px solid #ccc;">', 
                                 unsafe_allow_html=True
                             )
                         else: 
                             st.warning("No Image")
-                            
+
                     with cols[1]:
                         with st.form(f"edit_{i}"):
                             c1, c2 = st.columns(2)
