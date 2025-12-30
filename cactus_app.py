@@ -10,9 +10,10 @@ import io
 import json
 import time
 import gc
+import re # เพิ่ม Library สำหรับกรองคำ
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="Cactus Manager (2.5 ONLY)", page_icon="🌵", layout="wide")
+st.set_page_config(page_title="Cactus Manager (Cleaner)", page_icon="🌵", layout="wide")
 
 BUCKET_NAME = "cactus-free-storage-2025" 
 
@@ -44,12 +45,37 @@ def get_sheet_service():
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# --- 3. AI (Strictly Gemini 2.5 Only) ---
-def analyze_image(image):
-    # ⚠️ บังคับใช้ gemini-2.5-flash ตัวเดียวเท่านั้น (ไม่มี Fallback)
-    # ถ้าตัวนี้ใช้ไม่ได้ ให้มัน Error ไปเลย ไม่ต้องหนีไปใช้ตัวอื่น
-    model_name = 'gemini-2.5-flash' 
+# --- 3. ฟังก์ชันล้างลิงก์เสีย (พระเอกของงานนี้) ---
+def clean_image_link(raw_link):
+    raw_link = str(raw_link).strip()
     
+    # ถ้าลิงก์ดูปกติอยู่แล้ว ก็คืนค่าเดิม
+    if raw_link.startswith("http") and "[" not in raw_link:
+        return raw_link
+        
+    # ถ้าลิงก์เละ (มี [] หรือขยะปนมา) ให้ใช้ Regex สกัดหา Pattern ของ URL
+    # หาข้อความที่ขึ้นต้นด้วย https:// และจบด้วย .jpg หรือ .jpeg หรือ .png
+    match = re.search(r'(https://storage\.googleapis\.com/.*?\.(?:jpg|jpeg|png))', raw_link, re.IGNORECASE)
+    
+    if match:
+        return match.group(1) # คืนค่าเฉพาะลิงก์ที่สะอาดแล้ว
+    
+    # ถ้ากู้ไม่ได้จริงๆ ให้ลองตัดส่วน Bucket Name มาต่อใหม่ (ท่าไม้ตายแก้ขยะ)
+    if BUCKET_NAME in raw_link:
+        try:
+            # ตัดเอาเฉพาะส่วนหลังชื่อ Bucket
+            part = raw_link.split(BUCKET_NAME)[-1]
+            # ลบเครื่องหมาย / หรือ \ ที่เกินมาด้านหน้า
+            clean_path = part.lstrip("/").lstrip("\\")
+            return f"https://storage.googleapis.com/{BUCKET_NAME}/{clean_path}"
+        except:
+            pass
+            
+    return raw_link
+
+# --- 4. AI (Hardcoded Gemini 2.5 Only) ---
+def analyze_image(image):
+    model_name = 'gemini-2.5-flash' # บังคับตัวนี้ตัวเดียว
     try:
         model = genai.GenerativeModel(model_name)
         prompt = """
@@ -64,10 +90,9 @@ def analyze_image(image):
         if text.startswith("```json"): text = text[7:-3]
         return json.loads(text)
     except Exception as e:
-        # แสดงชื่อโมเดลที่ Error ให้เห็นชัดๆ
         return {"pot_number": "", "species": f"Error ({model_name}): {e}", "thai_name": ""}
 
-# --- 4. Services ---
+# --- 5. Services ---
 def append_to_sheet(data_row):
     service = get_sheet_service()
     data_row.append("") 
@@ -107,14 +132,13 @@ def upload_to_bucket(file_obj, filename):
         blob = bucket.blob(filename)
         file_obj.seek(0)
         blob.upload_from_file(file_obj, content_type='image/jpeg')
-        # พยายามเปิด Public
         try: blob.make_public()
         except: pass
         return f"[https://storage.googleapis.com/](https://storage.googleapis.com/){BUCKET_NAME}/{filename}"
     except Exception as e:
         return f"Error: {e}"
 
-# --- 5. UI ---
+# --- 6. UI ---
 tab1, tab2 = st.tabs(["📸 บันทึก", "🛠️ จัดการ"])
 
 with tab1:
@@ -140,7 +164,6 @@ with tab1:
         
         if 'last_analyzed_file' not in st.session_state or st.session_state['last_analyzed_file'] != uploaded_file.name:
             with c2:
-                # แก้ข้อความให้ตรงกับโมเดล
                 with st.spinner('🤖 AI (Gemini 2.5) กำลังทำงาน...'):
                     st.session_state['ai_result'] = analyze_image(image)
                     st.session_state['last_analyzed_file'] = uploaded_file.name
@@ -200,17 +223,21 @@ with tab2:
                     cols = st.columns([1, 3])
                     
                     with cols[0]:
-                        img_link = str(row.get('Image Link', '')).strip()
-                        # ใช้ HTML Direct เพื่อความชัวร์ 100%
+                        raw_link = row.get('Image Link', '')
+                        # 🔥 เรียกใช้ฟังก์ชันล้างลิงก์ที่นี่ 🔥
+                        img_link = clean_image_link(raw_link)
+                        
                         if "http" in img_link:
                             st.markdown(
                                 f'<img src="{img_link}" style="width:100%; max-width:200px; border-radius:8px; border:1px solid #ccc;">', 
                                 unsafe_allow_html=True
                             )
-                            # Link สำหรับตรวจสอบ
-                            st.markdown(f"[🔗 ตรวจสอบรูป]({img_link})")
+                            # แสดงลิงก์ให้ดูด้วย (เผื่อเช็คว่าสะอาดจริงไหม)
+                            st.caption(f"Clean Link: {img_link[-20:]}...") 
+                            st.markdown(f"[🔗 เปิดรูปเต็ม]({img_link})")
                         else: 
                             st.warning("No Image")
+                            st.caption(f"Raw Data: {str(raw_link)[:30]}...") # Debug ดูขยะ
                     
                     with cols[1]:
                         with st.form(f"edit_{i}"):
