@@ -13,7 +13,7 @@ import gc
 import re
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="Cactus Manager (Auto-Backup)", page_icon="🌵", layout="wide")
+st.set_page_config(page_title="Cactus Manager (Manual Backup)", page_icon="🌵", layout="wide")
 
 BUCKET_NAME = "cactus-free-storage-2025" 
 
@@ -45,7 +45,7 @@ def get_sheet_service():
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# --- 3. ฟังก์ชันสร้างลิงก์ใหม่ (Link Rebuilder - แก้รูปไม่ขึ้น) ---
+# --- 3. Link Rebuilder (แก้รูปไม่ขึ้น) ---
 def rebuild_clean_link(dirty_link):
     dirty_link = str(dirty_link).strip()
     match = re.search(r'(Cactus_.*?\.jpg)', dirty_link, re.IGNORECASE)
@@ -54,45 +54,43 @@ def rebuild_clean_link(dirty_link):
         return f"https://storage.googleapis.com/{BUCKET_NAME}/{filename}"
     return dirty_link
 
-# --- 4. AI (Priority: 2.0 Exp -> 1.5 Pro -> 1.5 Flash) ---
+# --- 4. AI (Try Best -> Fallback to Manual) ---
 def find_working_model():
-    # เรียงลำดับความเทพ (พยายามใช้ตัวบนสุดก่อน)
+    # ลองรุ่นอื่นๆ ที่ไม่ใช่ 1.5-flash ตัวเก่า
     candidates = [
         'gemini-2.0-flash-exp',   # เป้าหมายหลัก
-        'gemini-1.5-pro',         # รองลงมา
-        'gemini-1.5-pro-002',     
-        'gemini-1.5-flash'        # ตัวกันตาย (ต้องมี ไม่งั้นแอพดับ)
+        'gemini-1.5-flash-8b',    # รุ่น 8B (รุ่นเล็ก อาจมีโควต้าเหลือ)
+        'gemini-1.5-pro-002',
+        'gemini-1.5-pro'
     ]
     
     status_box = st.empty()
     
     for name in candidates:
         try:
-            # ลองเชื่อมต่อ
             genai.GenerativeModel(name).generate_content("hi")
             st.session_state['working_model_name'] = name
-            
-            # แจ้งผู้ใช้ว่าตอนนี้ใช้ตัวไหนอยู่
-            if 'flash-exp' in name:
-                status_box.success(f"⚡ ใช้โมเดลตัวเทพ: {name}")
-            elif 'pro' in name:
-                status_box.info(f"🛡️ ใช้โมเดล Pro: {name}")
-            else:
-                status_box.warning(f"⚠️ ตัวเทพโควต้าเต็ม -> ใช้ตัวสำรอง: {name}")
-                
-            time.sleep(1)
+            status_box.success(f"✅ จับสัญญาณได้ที่: {name}")
+            time.sleep(0.5)
             status_box.empty()
             return name
         except:
-            continue # ถ้าตัวนี้พัง/เต็ม ให้ข้ามไปตัวถัดไปทันที
+            continue
             
-    status_box.error("❌ ระบบล่ม: โควต้าเต็มทุกโมเดล (กรุณาลองใหม่พรุ่งนี้)")
+    # ถ้าโควตาเต็มหมดจริงๆ ให้คืนค่า None (เพื่อเข้าสู่ Manual Mode)
+    status_box.warning("⚠️ โควตา AI เต็มทุกตัว -> เข้าสู่โหมดกรอกมือ")
     return None
 
 def analyze_image(image):
     model_name = find_working_model()
+    
+    # กรณี: หาโมเดลไม่ได้เลย (โควตาเต็ม)
     if not model_name: 
-        return {"pot_number": "", "species": "Quota Exceeded", "thai_name": ""}
+        return {
+            "pot_number": "", 
+            "species": "System: Manual Mode (Quota Full)", 
+            "thai_name": ""
+        }
     
     try:
         model = genai.GenerativeModel(model_name)
@@ -180,25 +178,33 @@ with tab1:
         c1, c2 = st.columns([1, 2])
         with c1: st.image(image, use_container_width=True)
         
+        # Logic ใหม่: ถ้า AI Error หรือ Quota เต็ม ก็แค่ข้ามไป แล้วโชว์ฟอร์มเปล่า
         if 'last_analyzed_file' not in st.session_state or st.session_state['last_analyzed_file'] != uploaded_file.name:
             with c2:
-                with st.spinner('🤖 AI กำลังทำงาน...'):
+                with st.spinner('🤖 กำลังติดต่อ AI (ถ้าเต็มนานเกินจะข้าม)...'):
                     st.session_state['ai_result'] = analyze_image(image)
                     st.session_state['last_analyzed_file'] = uploaded_file.name
                 
         if 'ai_result' in st.session_state:
             data = st.session_state['ai_result']
             with c2:
-                if "Error" in str(data.get('species', '')):
-                    st.warning(f"AI Warning: {data.get('species')}")
+                # แสดงข้อความเตือน (ถ้ามี) แต่ไม่ Error แดง
+                species_val = data.get('species', '')
+                if "Quota" in species_val or "Manual" in species_val:
+                    st.warning("⚠️ โควตา AI ประจำวันหมด: กรุณากรอกข้อมูลเองครับ")
+                    # เคลียร์ค่า Error ออก เพื่อไม่ให้ไปโผล่ในช่องกรอก
+                    if "System:" in species_val: species_val = ""
+                elif "Error" in species_val:
+                    st.error(f"AI Error: {species_val}")
+                    species_val = ""
 
                 with st.form("save_form"):
                     f_c1, f_c2 = st.columns(2)
                     pot_no = f_c1.text_input("เลขกระถาง", data.get('pot_number'))
-                    species = f_c2.text_input("ชื่อวิทย์", data.get('species'))
+                    species = f_c2.text_input("ชื่อวิทย์", species_val)
                     thai = st.text_input("ชื่อไทย", data.get('thai_name'))
                     
-                    if st.form_submit_button("💾 บันทึก", type="primary"):
+                    if st.form_submit_button("💾 บันทึก (Manual Save)", type="primary"):
                         try:
                             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                             img_byte = io.BytesIO()
@@ -242,8 +248,7 @@ with tab2:
                     
                     with cols[0]:
                         raw_link = row.get('Image Link', '')
-                        
-                        # สร้างลิงก์ใหม่จากชื่อไฟล์ (แก้ปัญหาลิงก์เสีย)
+                        # ระบบสร้างลิงก์ใหม่ (Link Rebuilder)
                         clean_link = rebuild_clean_link(raw_link)
                         
                         if "http" in clean_link:
@@ -251,7 +256,7 @@ with tab2:
                                 f'<img src="{clean_link}" style="width:100%; max-width:200px; border-radius:8px; border:1px solid #ccc;">', 
                                 unsafe_allow_html=True
                             )
-                            # ลิงก์กดดูรูปจริง
+                            st.caption(f"File: {clean_link.split('/')[-1]}")
                             st.markdown(f"[🔗 เปิดรูป]({clean_link})")
                         else: 
                             st.warning("No Image")
