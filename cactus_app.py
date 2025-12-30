@@ -73,8 +73,7 @@ def get_all_cacti():
         return pd.DataFrame()
 
 def analyze_image(image):
-    # ✅ บัญชีใหม่ใช้รุ่นนี้ได้ชัวร์! ฟรี 1,500 รูป/วัน
-    model_name = 'gemini-1.5-flash'
+model_name = 'gemini-flash-latest'
     
     try:
         model = genai.GenerativeModel(model_name)
