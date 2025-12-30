@@ -73,9 +73,8 @@ def get_all_cacti():
         return pd.DataFrame()
 
 def analyze_image(image):
-    # เปลี่ยนมาใช้รุ่น Experimental 1206 (ที่มีในลิสต์ของคุณ)
-    # ปกติรุ่น exp จะมีโควตาแยกต่างหาก หวังว่าจะยังไม่เต็มครับ
-    model_name = 'gemini-exp-1206'
+    # ✅ บัญชีใหม่ใช้รุ่นนี้ได้ชัวร์! ฟรี 1,500 รูป/วัน
+    model_name = 'gemini-1.5-flash'
     
     try:
         model = genai.GenerativeModel(model_name)
@@ -93,7 +92,7 @@ def analyze_image(image):
         return json.loads(text)
         
     except Exception as e:
-        return {"pot_number": "", "species": f"Error ({model_name}): {e}", "thai_name": "โควตาเต็มทุกรุ่น ต้องเปลี่ยน API Key"}
+        return {"pot_number": "", "species": f"Error ({model_name}): {e}", "thai_name": "เช็ค API Key ใน Secrets"}
 
 # --- 3. ส่วนแสดงผล (UI) ---
 st.title("🌵 Cactus Collector Pro")
