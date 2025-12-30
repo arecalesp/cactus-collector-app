@@ -11,7 +11,7 @@ import json
 import time
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="Cactus Manager (Final)", page_icon="🌵", layout="wide")
+st.set_page_config(page_title="Cactus Manager (Brute Force)", page_icon="🌵", layout="wide")
 
 BUCKET_NAME = "cactus-free-storage-2025" 
 
@@ -29,12 +29,53 @@ except Exception as e:
 genai.configure(api_key=GEMINI_API_KEY)
 creds = service_account.Credentials.from_service_account_info(GCP_CREDS_DICT)
 
-# --- 2. ฟังก์ชัน AI (ล็อคชื่อโมเดล gemini-1.5-flash) ---
-def analyze_image(image):
-    # ⚠️ บังคับใช้ชื่อนี้เท่านั้น (ห้ามเปลี่ยน)
-    # เพราะเป็นตัวเดียวที่บัญชีใหม่ใช้ได้ฟรี 1,500 รูป/วัน
-    model_name = 'gemini-1.5-flash'
+# --- 2. ฟังก์ชันค้นหาโมเดลแบบ Brute Force (ไล่เช็คจนกว่าจะเจอตัวที่ใช้ได้) ---
+def find_working_model():
+    # ถ้าเคยหาเจอแล้ว ให้ใช้ตัวเดิม (จะได้ไม่เสียเวลาสแกนใหม่ทุกรอบ)
+    if 'working_model_name' in st.session_state:
+        return st.session_state['working_model_name']
+
+    status_text = st.empty()
+    status_text.warning("กำลังสแกนหาโมเดลที่ใช้งานได้... (Brute Force Mode)")
     
+    try:
+        # 1. ดึงรายชื่อโมเดลทั้งหมดที่บัญชีมองเห็น
+        all_models = [m for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # จัดลำดับการเทส: เอา Flash ขึ้นก่อน -> ตามด้วย Pro -> และอื่นๆ
+        # (เราพยายามเลี่ยง exp ถ้าเป็นไปได้ แต่ถ้าจำเป็นก็ต้องใช้)
+        sorted_models = sorted(all_models, key=lambda x: ('flash' not in x.name, 'exp' in x.name))
+        
+        # 2. วนลูปเทสทีละตัว (ยิงคำว่า hi ไปเช็ค)
+        for m in sorted_models:
+            friendly_name = m.name.replace('models/', '')
+            try:
+                # ลองยิง API
+                test_model = genai.GenerativeModel(m.name)
+                response = test_model.generate_content("hi")
+                if response.text:
+                    # ถ้าตอบกลับมาได้ = เจอตัวที่รอดแล้ว!
+                    st.session_state['working_model_name'] = friendly_name
+                    status_text.success(f"จับสัญญาณได้ที่: {friendly_name}")
+                    time.sleep(1)
+                    status_text.empty()
+                    return friendly_name
+            except:
+                continue # ตัวนี้พัง ข้ามไปตัวต่อไป
+        
+    except Exception as e:
+        st.error(f"System Error: {e}")
+    
+    status_text.error("ไม่พบโมเดลที่ใช้งานได้เลย (API Key นี้อาจหมดอายุหรือถูกระงับ)")
+    return None
+
+# --- 3. ฟังก์ชัน AI (เรียกใช้ตัวที่หาเจอ) ---
+def analyze_image(image):
+    model_name = find_working_model()
+    
+    if not model_name:
+        return {"pot_number": "", "species": "System Error: No Model Found", "thai_name": ""}
+
     try:
         model = genai.GenerativeModel(model_name)
         prompt = """
@@ -49,16 +90,18 @@ def analyze_image(image):
         if text.startswith("```json"): text = text[7:-3]
         return json.loads(text)
     except Exception as e:
-        # ถ้ายัง Error ให้แสดงชื่อโมเดลที่พังออกมาดู
-        return {"pot_number": "", "species": f"Error ({model_name}): {e}", "thai_name": ""}
+        # ถ้าตัวที่เคยดี ดันมาพังกลางทาง ให้ล้างค่าทิ้ง เพื่อให้รอบหน้าสแกนใหม่
+        if 'working_model_name' in st.session_state:
+            del st.session_state['working_model_name']
+        return {"pot_number": "", "species": f"Error: {e}", "thai_name": ""}
 
-# --- 3. ฟังก์ชัน Google Sheet (CRUD) ---
+# --- 4. ฟังก์ชัน Google Sheet (CRUD System) ---
 def get_sheet_service():
     return build('sheets', 'v4', credentials=creds)
 
 def append_to_sheet(data_row):
     service = get_sheet_service()
-    data_row.append("") # Note placeholder
+    data_row.append("") # Note Placeholder
     service.spreadsheets().values().append(
         spreadsheetId=SHEET_ID, range="Sheet1!A:F",
         valueInputOption="USER_ENTERED", body={'values': [data_row]}
@@ -103,23 +146,25 @@ def upload_to_bucket(file_obj, filename):
     except Exception as e:
         return f"Error: {e}"
 
-# --- 4. UI ---
+# --- 5. UI Application ---
 tab1, tab2 = st.tabs(["📸 บันทึกข้อมูล", "🛠️ จัดการข้อมูล (Dashboard)"])
 
+# === TAB 1: Scan ===
 with tab1:
     st.header("บันทึกต้นไม้ใหม่")
     uploaded_file = st.file_uploader("เลือกรูปภาพ", type=["jpg", "png", "jpeg"], key=f"uploader_{st.session_state['uploader_key']}")
 
     if uploaded_file:
         image = Image.open(uploaded_file)
-        image = ImageOps.exif_transpose(image)
+        image = ImageOps.exif_transpose(image) # Auto Rotate
+        
         c1, c2 = st.columns([1, 2])
         with c1: st.image(image, use_container_width=True)
         
-        # AI Auto Run
+        # AI Run (เรียก Brute Force Func)
         if 'last_analyzed_file' not in st.session_state or st.session_state['last_analyzed_file'] != uploaded_file.name:
             with c2:
-                with st.spinner('🤖 AI (Gemini 1.5 Flash) กำลังทำงาน...'):
+                with st.spinner('🤖 AI กำลังสแกนหาช่องสัญญาณ...'):
                     st.session_state['ai_result'] = analyze_image(image)
                     st.session_state['last_analyzed_file'] = uploaded_file.name
                 
@@ -156,12 +201,13 @@ with tab1:
                             time.sleep(1) 
                             st.rerun()
 
+# === TAB 2: Dashboard ===
 with tab2:
     st.header("จัดการข้อมูลแคคตัส")
     df = load_data_from_sheet()
     
     if not df.empty:
-        view_mode = st.radio("มุมมอง:", ["📝 รายการ", "📊 ตารางรวม"], horizontal=True)
+        view_mode = st.radio("มุมมอง:", ["📝 รายการ (แก้ไข/ลบ)", "📊 ตารางรวม"], horizontal=True)
         st.divider()
 
         if "ตาราง" in view_mode:
