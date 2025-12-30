@@ -49,31 +49,44 @@ def append_to_sheet(data_row):
     ).execute()
 
 # 2.2 อ่านข้อมูล (Read)
+# แก้ไขฟังก์ชันนี้ (เพื่อรองรับกรณีข้อมูลใน Sheet ยาวไม่เท่ากัน)
 def load_data_from_sheet():
     try:
         service = get_sheet_service()
         sheet = service.spreadsheets()
-        # อ่านถึง F (Note)
+        
+        # อ่านข้อมูล A ถึง F
         result = sheet.values().get(spreadsheetId=SHEET_ID, range="Sheet1!A:F").execute()
         values = result.get('values', [])
         
-        if not values: return pd.DataFrame()
+        if not values: 
+            return pd.DataFrame()
         
-        # สร้าง Header ถ้าคอลัมน์ไม่ครบ
-        headers = values[0]
-        required_cols = ['Date', 'Pot No', 'Species', 'Thai Name', 'Image Link', 'Note']
+        # กำหนด Header มาตรฐานที่เราต้องการ (บังคับใช้ 6 ตัวนี้เสมอ)
+        headers = ['Date', 'Pot No', 'Species', 'Thai Name', 'Image Link', 'Note']
         
-        # ปรับ Dataframe ให้ตรงกับ Header
-        df = pd.DataFrame(values[1:], columns=headers)
+        # ข้ามแถวแรก (Header ใน Sheet) แล้วเอาเฉพาะข้อมูล
+        data_rows = values[1:]
         
-        # ถ้าไม่มีคอลัมน์ Note ให้สร้างหลอกๆ ขึ้นมาใน DF
-        if 'Note' not in df.columns and len(df.columns) == 5:
-            df['Note'] = ""
+        # ⚠️ สำคัญ: วนลูปเช็คทุกแถว ถ้าแถวไหนยาวไม่ครบ 6 ช่อง ให้เติม "" จนครบ
+        # เพื่อกัน Error "columns passed..."
+        cleaned_data = []
+        for row in data_rows:
+            # เติมช่องว่างจนกว่าจะครบตามจำนวน Header
+            while len(row) < len(headers):
+                row.append("")
+            # ตัดส่วนเกินทิ้ง (เผื่อเกิน)
+            cleaned_data.append(row[:len(headers)])
             
+        # สร้าง DataFrame จากข้อมูลที่ "คลีน" แล้ว
+        df = pd.DataFrame(cleaned_data, columns=headers)
+        
         return df
+        
     except Exception as e:
         st.error(f"โหลดข้อมูลไม่สำเร็จ: {e}")
-        return pd.DataFrame()
+        # กรณี Error ให้ส่งตารางเปล่ากลับไป แอพจะได้ไม่พัง
+        return pd.DataFrame(columns=['Date', 'Pot No', 'Species', 'Thai Name', 'Image Link', 'Note'])
 
 # 2.3 แก้ไขข้อมูล (Update)
 def update_sheet_row(row_index, pot_no, species, thai, note):
