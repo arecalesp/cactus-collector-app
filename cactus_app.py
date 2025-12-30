@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from PIL import Image, ImageOps # ตัวช่วยแก้รูปกลับหัว
+from PIL import Image, ImageOps 
 import google.generativeai as genai
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -11,7 +11,7 @@ import json
 import time
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="Cactus Collector (Final)", page_icon="🌵")
+st.set_page_config(page_title="Cactus Collector (Stable)", page_icon="🌵")
 
 BUCKET_NAME = "cactus-free-storage-2025" 
 
@@ -29,39 +29,39 @@ except Exception as e:
 genai.configure(api_key=GEMINI_API_KEY)
 creds = service_account.Credentials.from_service_account_info(GCP_CREDS_DICT)
 
-# --- 2. ฟังก์ชันค้นหาโมเดลอัตโนมัติ (แก้ปัญหา 404 ถาวร) ---
+# --- 2. ฟังก์ชันค้นหาโมเดล (ฉบับคัดกรองรุ่นมีปัญหาออก) ---
 def get_best_available_model():
     try:
-        # ดึงรายชื่อโมเดลทั้งหมดที่บัญชีนี้ใช้ได้จริง
+        # ดึงรายชื่อโมเดลทั้งหมดที่มีในบัญชี
         available_models = [m.name for m in genai.list_models()]
         
-        # รายชื่อโมเดลที่เราอยากได้ (เรียงตามความเก่ง)
+        # รายชื่อ "รุ่นเสถียร" ที่เราต้องการ (ตัดรุ่น exp และ 2.0 ทิ้งเพื่อกัน Error 429/Limit 0)
+        # เราเน้นรุ่นที่มีรหัส -001, -002 เพราะเป็น Production Grade
         preferred_order = [
-            'models/gemini-1.5-flash',
-            'models/gemini-1.5-flash-latest',
-            'models/gemini-1.5-flash-001',
-            'models/gemini-1.5-flash-002',
-            'models/gemini-2.0-flash-exp',
-            'models/gemini-flash-1.5',
-            'models/gemini-pro',       # รุ่นเก่าแต่ชัวร์
+            'models/gemini-1.5-flash-002', # รุ่นใหม่เสถียร
+            'models/gemini-1.5-flash-001', # รุ่นเก่าเสถียร
+            'models/gemini-1.5-flash',     # Alias
+            'models/gemini-1.5-pro-002',
+            'models/gemini-1.5-pro-001',
+            'models/gemini-pro',           # รุ่น 1.0 (เก่าแต่ชัวร์สุด)
             'models/gemini-1.0-pro'
         ]
         
-        # วนลูปหา: ตัวไหนเจอในบัญชีคุณ หยิบตัวนั้นเลย
+        # วนลูปหา: ตัวไหนเจอตัวแรก เอาตัวนั้นเลย
+        found_model = None
         for model in preferred_order:
             if model in available_models:
-                # ตัดคำว่า models/ ออกเพื่อให้ library ใช้งานได้
-                return model.replace('models/', '')
+                found_model = model.replace('models/', '')
+                break
         
-        # ถ้าไม่เจอในลิสต์ข้างบนเลย ให้ใช้ตัวแรกสุดที่รองรับการสร้างข้อความ
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                return m.name.replace('models/', '')
-                
+        # ถ้าหาไม่เจอเลย ให้ใช้ gemini-pro (ตัวสุดท้ายที่ยังไงก็ต้องมี)
+        if not found_model:
+            return 'gemini-pro'
+            
+        return found_model
+
     except Exception as e:
-        return 'gemini-1.5-flash' # Fallback สุดท้าย
-        
-    return 'gemini-1.5-flash'
+        return 'gemini-pro' # Fallback ฉุกเฉิน
 
 # --- 3. ฟังก์ชัน Cloud Storage ---
 def upload_to_bucket(file_obj, filename):
@@ -87,13 +87,13 @@ def append_to_sheet(data_row):
         body=body
     ).execute()
 
-# --- 5. ฟังก์ชัน AI (Auto Mode) ---
+# --- 5. ฟังก์ชัน AI ---
 def analyze_image(image):
-    # เรียกฟังก์ชันหาโมเดลอัตโนมัติ
+    # เรียกหาโมเดล (ที่กรองแล้ว)
     model_name = get_best_available_model()
     
-    # (Optional) แสดงชื่อโมเดลที่ระบบเลือกให้ (เอาไว้เช็คได้)
-    # st.toast(f"Using Model: {model_name}") 
+    # [Debug] โชว์ชื่อโมเดลที่เลือกใช้ จะได้รู้ว่ามันหยิบตัวไหนมา
+    # st.info(f"Using Model: {model_name}") 
     
     try:
         model = genai.GenerativeModel(model_name)
@@ -112,31 +112,31 @@ def analyze_image(image):
         return json.loads(text)
         
     except Exception as e:
-        return {"pot_number": "", "species": f"Error: {e}", "thai_name": f"Model: {model_name}"}
+        # ถ้ายัง Error อีก ให้แจ้งชื่อโมเดลที่พังออกมาด้วย
+        return {"pot_number": "", "species": f"Error ({model_name}): {e}", "thai_name": "AI Failed"}
 
 # --- 6. หน้าจอแอพ ---
-st.title("🌵 บันทึกแคคตัส (Final Fixed)")
+st.title("🌵 บันทึกแคคตัส (Stable Ver.)")
 
 uploaded_file = st.file_uploader(
-    "เลือกรูปภาพ (แก้กลับหัวอัตโนมัติ)", 
+    "เลือกรูปภาพ", 
     type=["jpg", "jpeg", "png"],
     key=f"uploader_{st.session_state['uploader_key']}"
 )
 
 if uploaded_file is not None:
-    # 1. แก้รูปกลับหัวทันที
     image = Image.open(uploaded_file)
-    image = ImageOps.exif_transpose(image)
+    image = ImageOps.exif_transpose(image) # แก้รูปกลับหัว
     
     st.image(image, caption="รูปภาพ", width=300)
     
-    # 2. AI ทำงานอัตโนมัติ (Auto Run)
+    # Auto Run
     if 'last_analyzed_file' not in st.session_state or st.session_state['last_analyzed_file'] != uploaded_file.name:
-        with st.spinner('กำลังค้นหาโมเดลและวิเคราะห์...'):
+        with st.spinner('🤖 AI กำลังทำงาน (ค้นหาโมเดลเสถียร)...'):
             st.session_state['ai_result'] = analyze_image(image)
             st.session_state['last_analyzed_file'] = uploaded_file.name
             
-    # 3. แสดงฟอร์ม
+    # Form
     if 'ai_result' in st.session_state:
         data = st.session_state['ai_result']
         
@@ -150,14 +150,14 @@ if uploaded_file is not None:
             
             if submit:
                 with st.spinner('กำลังบันทึก...'):
-                    # Save
+                    # Save Image
                     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                     fname = f"Cactus_{pot_no}_{ts}.jpg"
                     img_byte = io.BytesIO()
-                    image.save(img_byte, format='JPEG') # เซฟรูปที่แก้หมุนแล้ว
-                    
+                    image.save(img_byte, format='JPEG') 
                     link = upload_to_bucket(img_byte, fname)
                     
+                    # Save Data
                     today = str(datetime.today().date())
                     append_to_sheet([today, pot_no, species, thai, link])
                     
