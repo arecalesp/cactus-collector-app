@@ -11,7 +11,7 @@ import json
 import time
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="Cactus Manager (Lite)", page_icon="🌵", layout="wide")
+st.set_page_config(page_title="Cactus Manager (Final Combined)", page_icon="🌵", layout="wide")
 
 BUCKET_NAME = "cactus-free-storage-2025" 
 
@@ -29,36 +29,50 @@ except Exception as e:
 genai.configure(api_key=GEMINI_API_KEY)
 creds = service_account.Credentials.from_service_account_info(GCP_CREDS_DICT)
 
-# --- 2. ฟังก์ชัน AI (Brute Force) ---
+# --- 2. ฟังก์ชัน AI แบบ Brute Force (ตัวจริง) ---
 def find_working_model():
+    # ถ้าเคยหาเจอแล้ว และมันยังทำงานได้ ก็ใช้ตัวเดิม
     if 'working_model_name' in st.session_state:
         return st.session_state['working_model_name']
+
+    status_container = st.empty()
+    status_container.warning("⚠️ กำลังสแกนหาโมเดลที่ใช้งานได้ (Brute Force Mode)...")
     
-    # รายชื่อโมเดลที่น่าจะใช้ได้ (เรียงจาก Flash -> Pro -> Exp)
-    candidates = [
-        'gemini-1.5-flash', 
-        'gemini-1.5-flash-001',
-        'gemini-1.5-flash-002',
-        'gemini-1.5-pro',
-        'gemini-1.5-pro-001',
-        'gemini-1.0-pro',
-        'gemini-pro'
-    ]
-    
-    # วนลูปเทส
-    for name in candidates:
-        try:
-            model = genai.GenerativeModel(name)
-            model.generate_content("hi")
-            st.session_state['working_model_name'] = name
-            return name
-        except:
-            continue
-            
-    return 'gemini-1.5-flash' # Fallback
+    try:
+        # 1. ดึงรายชื่อทั้งหมด
+        all_models = [m for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # 2. จัดลำดับ: ลอง Flash ก่อน -> ตามด้วย Pro -> และอื่นๆ
+        # (เทคนิค: เอา exp ไว้ท้ายๆ แต่ไม่ตัดทิ้ง เผื่อจำเป็นต้องใช้)
+        sorted_models = sorted(all_models, key=lambda x: ('flash' not in x.name, 'exp' in x.name))
+        
+        # 3. ไล่ยิง Test ทีละตัว
+        for m in sorted_models:
+            friendly_name = m.name.replace('models/', '')
+            try:
+                # ยิง Test จริงๆ ถ้าผ่านคือใช้ได้แน่นอน
+                model = genai.GenerativeModel(m.name)
+                response = model.generate_content("test")
+                
+                if response.text:
+                    st.session_state['working_model_name'] = friendly_name
+                    status_container.success(f"✅ เชื่อมต่อสำเร็จ: {friendly_name}")
+                    time.sleep(1)
+                    status_container.empty()
+                    return friendly_name
+            except:
+                continue # ตัวนี้พัง ไปตัวถัดไป
+                
+    except Exception as e:
+        st.error(f"System Error: {e}")
+
+    # ถ้าไม่เจอเลย ให้ลองเสี่ยงดวงกับตัว Default
+    return 'gemini-1.5-flash'
 
 def analyze_image(image):
+    # เรียกใช้ฟังก์ชันค้นหา
     model_name = find_working_model()
+    
     try:
         model = genai.GenerativeModel(model_name)
         prompt = """
@@ -73,15 +87,18 @@ def analyze_image(image):
         if text.startswith("```json"): text = text[7:-3]
         return json.loads(text)
     except Exception as e:
+        # ถ้าตัวที่เคยเลือกเกิดพัง ให้ล้างค่าทิ้งเพื่อให้รอบหน้าสแกนใหม่
+        if 'working_model_name' in st.session_state:
+            del st.session_state['working_model_name']
         return {"pot_number": "", "species": f"Error: {e}", "thai_name": ""}
 
-# --- 3. ฟังก์ชัน Google Sheet & Storage ---
+# --- 3. ฟังก์ชัน Google Sheet (CRUD System) ---
 def get_sheet_service():
     return build('sheets', 'v4', credentials=creds)
 
 def append_to_sheet(data_row):
     service = get_sheet_service()
-    data_row.append("") # Note
+    data_row.append("") # เติม Note ว่างๆ
     service.spreadsheets().values().append(
         spreadsheetId=SHEET_ID, range="Sheet1!A:F",
         valueInputOption="USER_ENTERED", body={'values': [data_row]}
@@ -97,6 +114,7 @@ def load_data_from_sheet():
         headers = ['Date', 'Pot No', 'Species', 'Thai Name', 'Image Link', 'Note']
         cleaned_data = []
         for row in values[1:]:
+            # Auto-Fill: เติมช่องว่างให้ครบตามจำนวน Header
             while len(row) < len(headers): row.append("")
             cleaned_data.append(row[:len(headers)])
         return pd.DataFrame(cleaned_data, columns=headers)
@@ -106,7 +124,9 @@ def load_data_from_sheet():
 def update_sheet_row(row_index, pot_no, species, thai, note):
     r = row_index + 2
     service = get_sheet_service()
+    # Update ข้อมูลหลัก
     service.spreadsheets().values().update(spreadsheetId=SHEET_ID, range=f"Sheet1!B{r}:D{r}", valueInputOption="USER_ENTERED", body={'values': [[pot_no, species, thai]]}).execute()
+    # Update Note
     service.spreadsheets().values().update(spreadsheetId=SHEET_ID, range=f"Sheet1!F{r}", valueInputOption="USER_ENTERED", body={'values': [[note]]}).execute()
 
 def delete_sheet_row(row_index):
@@ -126,120 +146,15 @@ def upload_to_bucket(file_obj, filename):
     except Exception as e:
         return f"Error: {e}"
 
-# --- 4. UI ---
-tab1, tab2 = st.tabs(["📸 บันทึกข้อมูล", "🛠️ จัดการข้อมูล"])
+# --- 4. ส่วนแสดงผล UI (Tabs) ---
+tab1, tab2 = st.tabs(["📸 บันทึกข้อมูล", "🛠️ จัดการข้อมูล (Dashboard)"])
 
-# === TAB 1: Scan (Lite Version) ===
+# === TAB 1: Scan & Save (Auto Resize + Brute Force AI) ===
 with tab1:
     st.header("บันทึกต้นไม้ใหม่")
     uploaded_file = st.file_uploader("เลือกรูปภาพ", type=["jpg", "png", "jpeg"], key=f"uploader_{st.session_state['uploader_key']}")
 
     if uploaded_file:
-        # 1. ย่อรูปทันที! (แก้ปัญหาหน้าขาว)
-        # ไม่รอให้กดปุ่มบันทึก แต่ย่อตั้งแต่เปิดรูปเลย
+        # 1. จัดการรูปภาพทันที (Auto Rotate + Resize)
         original_image = Image.open(uploaded_file)
         original_image = ImageOps.exif_transpose(original_image)
-        
-        # Resize: บังคับความกว้างสูงสุดแค่ 800px (เล็กแต่ชัดพอสำหรับ AI)
-        max_width = 800
-        w, h = original_image.size
-        if w > max_width:
-            ratio = max_width / w
-            # ใช้ image ตัวเดิมทับไปเลยเพื่อคืน Memory
-            image = original_image.resize((max_width, int(h * ratio)))
-        else:
-            image = original_image
-
-        c1, c2 = st.columns([1, 2])
-        with c1: st.image(image, use_container_width=True, caption=f"Resized: {image.size}")
-        
-        # AI Auto Run
-        if 'last_analyzed_file' not in st.session_state or st.session_state['last_analyzed_file'] != uploaded_file.name:
-            with c2:
-                with st.spinner('🤖 AI กำลังทำงาน...'):
-                    # ส่งรูปเล็กไปให้ AI (ทำงานไวขึ้น)
-                    st.session_state['ai_result'] = analyze_image(image)
-                    st.session_state['last_analyzed_file'] = uploaded_file.name
-                
-        if 'ai_result' in st.session_state:
-            data = st.session_state['ai_result']
-            with c2:
-                with st.form("save_form"):
-                    f_c1, f_c2 = st.columns(2)
-                    pot_no = f_c1.text_input("เลขกระถาง", data.get('pot_number'))
-                    species = f_c2.text_input("ชื่อวิทย์", data.get('species'))
-                    thai = st.text_input("ชื่อไทย", data.get('thai_name'))
-                    
-                    if st.form_submit_button("💾 บันทึก", type="primary"):
-                        try:
-                            # แสดงสถานะชัดเจน
-                            status = st.empty()
-                            status.info("⏳ กำลังอัปโหลดรูป...")
-                            
-                            # แปลงรูปเป็น Bytes (ใช้รูปที่ย่อแล้ว)
-                            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            img_byte = io.BytesIO()
-                            # ลด Quality ลงอีกนิดเพื่อความชัวร์
-                            image.save(img_byte, format='JPEG', quality=80) 
-                            
-                            # Upload
-                            link = upload_to_bucket(img_byte, f"Cactus_{pot_no}_{ts}.jpg")
-                            
-                            if "Error" in link:
-                                status.error(f"อัปโหลดล้มเหลว: {link}")
-                            else:
-                                status.info("⏳ กำลังบันทึกลง Sheet...")
-                                today = str(datetime.today().date())
-                                append_to_sheet([today, pot_no, species, thai, link])
-                                
-                                status.success("✅ บันทึกสำเร็จ!")
-                                
-                                # Reset
-                                del st.session_state['ai_result']
-                                del st.session_state['last_analyzed_file']
-                                st.session_state['uploader_key'] += 1
-                                time.sleep(1) 
-                                st.rerun()
-                                
-                        except Exception as e:
-                            st.error(f"เกิดข้อผิดพลาด: {e}")
-
-# === TAB 2: Dashboard ===
-with tab2:
-    st.header("จัดการข้อมูลแคคตัส")
-    df = load_data_from_sheet()
-    
-    if not df.empty:
-        view_mode = st.radio("มุมมอง:", ["📝 รายการ", "📊 ตารางรวม"], horizontal=True)
-        st.divider()
-
-        if "ตาราง" in view_mode:
-            st.dataframe(df, use_container_width=True)
-        else:
-            for i in reversed(range(len(df))):
-                row = df.iloc[i]
-                with st.container(border=True):
-                    cols = st.columns([1, 3])
-                    with cols[0]:
-                        if str(row.get('Image Link','')).startswith('http'):
-                            st.image(row.get('Image Link'), use_container_width=True)
-                        else: st.write("No Image")
-                    with cols[1]:
-                        with st.form(f"edit_form_{i}"):
-                            c1, c2 = st.columns(2)
-                            p = c1.text_input("เลขกระถาง", row.get('Pot No', ''))
-                            t = c2.text_input("ชื่อไทย", row.get('Thai Name', ''))
-                            s = st.text_input("ชื่อวิทย์", row.get('Species', ''))
-                            n = st.text_area("หมายเหตุ", str(row.get('Note', ''))) if 'Note' in row else st.text_area("หมายเหตุ")
-                            
-                            c_btn1, c_btn2 = st.columns([1, 4])
-                            if c_btn2.form_submit_button("บันทึกการแก้ไข"):
-                                update_sheet_row(i, p, s, t, n)
-                                st.toast("แก้ไขเรียบร้อย")
-                                time.sleep(1)
-                                st.rerun()
-                        if st.button("ลบต้นนี้", key=f"del_{i}"):
-                            delete_sheet_row(i)
-                            st.rerun()
-    else:
-        st.info("ยังไม่มีข้อมูลในระบบ")
