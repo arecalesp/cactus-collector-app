@@ -12,7 +12,7 @@ import time
 import gc
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="Cactus Manager (Debug Image)", page_icon="🌵", layout="wide")
+st.set_page_config(page_title="Cactus Manager (2.5 ONLY)", page_icon="🌵", layout="wide")
 
 BUCKET_NAME = "cactus-free-storage-2025" 
 
@@ -44,22 +44,12 @@ def get_sheet_service():
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# --- 3. AI ---
-def find_working_model():
-    if 'working_model_name' in st.session_state:
-        return st.session_state['working_model_name']
-    
-    candidates = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-pro']
-    for name in candidates:
-        try:
-            genai.GenerativeModel(name).generate_content("hi")
-            st.session_state['working_model_name'] = name
-            return name
-        except: continue
-    return 'gemini-1.5-flash'
-
+# --- 3. AI (Strictly Gemini 2.5 Only) ---
 def analyze_image(image):
-    model_name = find_working_model()
+    # ⚠️ บังคับใช้ gemini-2.5-flash ตัวเดียวเท่านั้น (ไม่มี Fallback)
+    # ถ้าตัวนี้ใช้ไม่ได้ ให้มัน Error ไปเลย ไม่ต้องหนีไปใช้ตัวอื่น
+    model_name = 'gemini-2.5-flash' 
+    
     try:
         model = genai.GenerativeModel(model_name)
         prompt = """
@@ -74,7 +64,8 @@ def analyze_image(image):
         if text.startswith("```json"): text = text[7:-3]
         return json.loads(text)
     except Exception as e:
-        return {"pot_number": "", "species": f"Error: {e}", "thai_name": ""}
+        # แสดงชื่อโมเดลที่ Error ให้เห็นชัดๆ
+        return {"pot_number": "", "species": f"Error ({model_name}): {e}", "thai_name": ""}
 
 # --- 4. Services ---
 def append_to_sheet(data_row):
@@ -113,129 +104,4 @@ def upload_to_bucket(file_obj, filename):
     try:
         client = get_storage_client()
         bucket = client.bucket(BUCKET_NAME)
-        blob = bucket.blob(filename)
-        file_obj.seek(0)
-        blob.upload_from_file(file_obj, content_type='image/jpeg')
-        # เนื่องจาก Bucket เป็น Uniform Access การสั่ง make_public อาจ error ได้
-        # เราข้าม try-except ตรงนี้ไปเลย เพราะถ้า Bucket เปิด Public แล้ว ไฟล์จะ Public เอง
-        return f"[https://storage.googleapis.com/](https://storage.googleapis.com/){BUCKET_NAME}/{filename}"
-    except Exception as e:
-        return f"Error: {e}"
-
-# --- 5. UI ---
-tab1, tab2 = st.tabs(["📸 บันทึก", "🛠️ จัดการ"])
-
-with tab1:
-    st.header(f"บันทึกต้นไม้ใหม่")
-    uploaded_file = st.file_uploader("เลือกรูปภาพ", type=["jpg", "png", "jpeg"], key=f"uploader_{st.session_state['uploader_key']}")
-
-    if uploaded_file:
-        original_image = Image.open(uploaded_file)
-        original_image = ImageOps.exif_transpose(original_image)
-        max_width = 700
-        w, h = original_image.size
-        if w > max_width:
-            ratio = max_width / w
-            image = original_image.resize((max_width, int(h * ratio)))
-        else:
-            image = original_image.copy()
-        
-        original_image.close()
-        gc.collect()
-
-        c1, c2 = st.columns([1, 2])
-        with c1: st.image(image, use_container_width=True)
-        
-        if 'last_analyzed_file' not in st.session_state or st.session_state['last_analyzed_file'] != uploaded_file.name:
-            with c2:
-                with st.spinner('🤖 AI กำลังทำงาน...'):
-                    st.session_state['ai_result'] = analyze_image(image)
-                    st.session_state['last_analyzed_file'] = uploaded_file.name
-                
-        if 'ai_result' in st.session_state:
-            data = st.session_state['ai_result']
-            with c2:
-                if "Error" in str(data.get('species', '')):
-                    st.warning(f"AI Error: {data.get('species')}")
-
-                with st.form("save_form"):
-                    f_c1, f_c2 = st.columns(2)
-                    pot_no = f_c1.text_input("เลขกระถาง", data.get('pot_number'))
-                    species = f_c2.text_input("ชื่อวิทย์", data.get('species'))
-                    thai = st.text_input("ชื่อไทย", data.get('thai_name'))
-                    
-                    if st.form_submit_button("💾 บันทึก", type="primary"):
-                        try:
-                            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            img_byte = io.BytesIO()
-                            image.save(img_byte, format='JPEG', quality=70)
-                            link = upload_to_bucket(img_byte, f"Cactus_{pot_no}_{ts}.jpg")
-                            
-                            if "Error" in link:
-                                st.error(f"Upload Failed: {link}")
-                            else:
-                                today = str(datetime.today().date())
-                                append_to_sheet([today, pot_no, species, thai, link])
-                                st.success("✅ บันทึกสำเร็จ!")
-                                del st.session_state['ai_result']
-                                del st.session_state['last_analyzed_file']
-                                st.session_state['uploader_key'] += 1
-                                image.close()
-                                img_byte.close()
-                                gc.collect()
-                                time.sleep(1)
-                                st.rerun()
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-
-with tab2:
-    st.header("จัดการข้อมูลแคคตัส")
-    if st.button("🔄 รีเฟรช"): st.rerun()
-    
-    df = load_data_from_sheet()
-    
-    if not df.empty:
-        view = st.radio("มุมมอง", ["รายการ", "ตาราง"], horizontal=True)
-        st.divider()
-
-        if view == "ตาราง":
-            st.dataframe(df, use_container_width=True)
-        else:
-            for i in reversed(range(len(df))):
-                row = df.iloc[i]
-                with st.container(border=True):
-                    cols = st.columns([1, 3])
-                    
-                    with cols[0]:
-                        img_link = str(row.get('Image Link', '')).strip()
-                        
-                        # --- 1. แสดงรูป (HTML) ---
-                        if "http" in img_link:
-                            st.markdown(
-                                f'<img src="{img_link}" style="width:100%; max-width:200px; border-radius:8px; border:1px solid #ccc;">', 
-                                unsafe_allow_html=True
-                            )
-                            # --- 2. แสดงปุ่มกดดูรูป (Debugger) ---
-                            st.markdown(f"🔗 [คลิกเพื่อตรวจสอบรูป]({img_link})")
-                        else: 
-                            st.warning("No Image")
-                    
-                    with cols[1]:
-                        with st.form(f"edit_{i}"):
-                            c1, c2 = st.columns(2)
-                            p = c1.text_input("เลข", row.get('Pot No', ''))
-                            t = c2.text_input("ชื่อไทย", row.get('Thai Name', ''))
-                            s = st.text_input("ชื่อวิทย์", row.get('Species', ''))
-                            n = st.text_area("Note", str(row.get('Note', '')))
-                            
-                            col_b1, col_b2 = st.columns([1, 4])
-                            if col_b2.form_submit_button("บันทึกแก้ไข"):
-                                update_sheet_row(i, p, s, t, n)
-                                st.toast("Saved")
-                                time.sleep(1)
-                                st.rerun()
-                        if st.button("ลบ", key=f"del_{i}"):
-                            delete_sheet_row(i)
-                            st.rerun()
-    else:
-        st.info("No Data")
+        blob =
