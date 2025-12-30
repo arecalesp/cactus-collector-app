@@ -11,8 +11,8 @@ import json
 import time
 import gc
 
-# --- 1. ตั้งค่าพื้นฐาน (เปลี่ยนชื่อให้รู้ว่าเวอร์ชั่นล่าสุด) ---
-st.set_page_config(page_title="Cactus Manager (2.5 Flash)", page_icon="🌵", layout="wide")
+# --- 1. ตั้งค่าพื้นฐาน ---
+st.set_page_config(page_title="Cactus Manager (Debug Image)", page_icon="🌵", layout="wide")
 
 BUCKET_NAME = "cactus-free-storage-2025" 
 
@@ -44,40 +44,19 @@ def get_sheet_service():
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# --- 3. AI (Target: gemini-2.5-flash) ---
+# --- 3. AI ---
 def find_working_model():
     if 'working_model_name' in st.session_state:
         return st.session_state['working_model_name']
     
-    # ⚠️ จัดลำดับตามที่คุณต้องการเป๊ะๆ
-    candidates = [
-        'gemini-2.5-flash',       # <-- อันดับ 1
-        'gemini-2.0-flash-exp',   # สำรอง (เผื่อพิมพ์ผิด)
-        'gemini-1.5-flash',
-        'gemini-pro'
-    ]
-    
-    status_box = st.empty()
-    
+    candidates = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-pro']
     for name in candidates:
         try:
-            # Test ยิงเบาๆ
             genai.GenerativeModel(name).generate_content("hi")
             st.session_state['working_model_name'] = name
-            
-            # แจ้งสถานะ
-            if name == 'gemini-2.5-flash':
-                status_box.success(f"✅ เชื่อมต่อ Gemini 2.5 Flash สำเร็จ!")
-            else:
-                status_box.info(f"ℹ️ ใช้โมเดล: {name}")
-                
-            time.sleep(1)
-            status_box.empty()
             return name
-        except:
-            continue
-            
-    return 'gemini-1.5-flash' # Fallback
+        except: continue
+    return 'gemini-1.5-flash'
 
 def analyze_image(image):
     model_name = find_working_model()
@@ -137,9 +116,8 @@ def upload_to_bucket(file_obj, filename):
         blob = bucket.blob(filename)
         file_obj.seek(0)
         blob.upload_from_file(file_obj, content_type='image/jpeg')
-        # พยายามเปิด Public
-        try: blob.make_public()
-        except: pass
+        # เนื่องจาก Bucket เป็น Uniform Access การสั่ง make_public อาจ error ได้
+        # เราข้าม try-except ตรงนี้ไปเลย เพราะถ้า Bucket เปิด Public แล้ว ไฟล์จะ Public เอง
         return f"[https://storage.googleapis.com/](https://storage.googleapis.com/){BUCKET_NAME}/{filename}"
     except Exception as e:
         return f"Error: {e}"
@@ -228,15 +206,17 @@ with tab2:
                 with st.container(border=True):
                     cols = st.columns([1, 3])
                     
-                    # --- ใช้ HTML แสดงรูป (Fix No Image) ---
                     with cols[0]:
                         img_link = str(row.get('Image Link', '')).strip()
                         
+                        # --- 1. แสดงรูป (HTML) ---
                         if "http" in img_link:
                             st.markdown(
-                                f'<img src="{img_link}" style="width:100%; max-width:200px; border-radius:8px;">', 
+                                f'<img src="{img_link}" style="width:100%; max-width:200px; border-radius:8px; border:1px solid #ccc;">', 
                                 unsafe_allow_html=True
                             )
+                            # --- 2. แสดงปุ่มกดดูรูป (Debugger) ---
+                            st.markdown(f"🔗 [คลิกเพื่อตรวจสอบรูป]({img_link})")
                         else: 
                             st.warning("No Image")
                     
