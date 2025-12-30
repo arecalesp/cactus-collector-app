@@ -12,7 +12,7 @@ import time
 import gc
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="Cactus Manager 2.5", page_icon="🌵", layout="wide")
+st.set_page_config(page_title="Cactus Manager (Fixed Image)", page_icon="🌵", layout="wide")
 
 BUCKET_NAME = "cactus-free-storage-2025" 
 
@@ -27,7 +27,7 @@ except Exception as e:
     st.error(f"Secret Error: {e}")
     st.stop()
 
-# --- 2. Caching (ลดภาระเครื่อง) ---
+# --- 2. Caching ---
 @st.cache_resource
 def get_gcp_creds():
     return service_account.Credentials.from_service_account_info(GCP_CREDS_DICT)
@@ -44,26 +44,19 @@ def get_sheet_service():
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# --- 3. AI (Gemini 2.5 Flash Priority) ---
+# --- 3. AI ---
 def find_working_model():
     if 'working_model_name' in st.session_state:
         return st.session_state['working_model_name']
-
-    # ⚠️ เอา gemini-2.5-flash ขึ้นก่อน ตามที่คุณบอกว่าใช้ได้
-    candidates = [
-        'gemini-2.5-flash', 
-        'gemini-1.5-flash', 
-        'gemini-1.5-flash-001',
-        'gemini-1.5-flash-002'
-    ]
     
+    # ลอง Flash 2.5 ก่อน
+    candidates = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-001']
     for name in candidates:
         try:
             genai.GenerativeModel(name).generate_content("hi")
             st.session_state['working_model_name'] = name
             return name
         except: continue
-            
     return 'gemini-1.5-flash'
 
 def analyze_image(image):
@@ -84,13 +77,10 @@ def analyze_image(image):
     except Exception as e:
         return {"pot_number": "", "species": f"Error: {e}", "thai_name": ""}
 
-# --- 4. Google Services ---
+# --- 4. Services ---
 def append_to_sheet(data_row):
     service = get_sheet_service()
-    # data_row ที่ส่งมามี 5 ตัว [Date, Pot, Species, Thai, Link]
-    # เติม Note (ตัวที่ 6) เป็นค่าว่าง
     data_row.append("") 
-    
     service.spreadsheets().values().append(
         spreadsheetId=SHEET_ID, range="Sheet1!A:F",
         valueInputOption="USER_ENTERED", body={'values': [data_row]}
@@ -99,22 +89,14 @@ def append_to_sheet(data_row):
 def load_data_from_sheet():
     try:
         service = get_sheet_service()
-        # อ่าน A ถึง F (6 คอลัมน์)
         result = service.spreadsheets().values().get(spreadsheetId=SHEET_ID, range="Sheet1!A:F").execute()
         values = result.get('values', [])
-        
         if not values: return pd.DataFrame()
-        
-        # Header มาตรฐาน (ต้องตรงกับข้อมูลใน Sheet)
         headers = ['Date', 'Pot No', 'Species', 'Thai Name', 'Image Link', 'Note']
-        
-        # Clean Data: เติมช่องว่างให้ครบ 6 ช่องเสมอ
         cleaned_data = []
-        for row in values[1:]: # ข้าม Header แถวแรก
-            # สร้าง List ใหม่ที่มีขนาด 6 ช่อง
+        for row in values[1:]:
             new_row = row[:6] + [""] * (6 - len(row))
             cleaned_data.append(new_row)
-            
         return pd.DataFrame(cleaned_data, columns=headers)
     except:
         return pd.DataFrame(columns=['Date', 'Pot No', 'Species', 'Thai Name', 'Image Link', 'Note'])
@@ -122,9 +104,7 @@ def load_data_from_sheet():
 def update_sheet_row(row_index, pot_no, species, thai, note):
     r = row_index + 2
     service = get_sheet_service()
-    # Update ข้อมูล (Col B-D)
     service.spreadsheets().values().update(spreadsheetId=SHEET_ID, range=f"Sheet1!B{r}:D{r}", valueInputOption="USER_ENTERED", body={'values': [[pot_no, species, thai]]}).execute()
-    # Update Note (Col F)
     service.spreadsheets().values().update(spreadsheetId=SHEET_ID, range=f"Sheet1!F{r}", valueInputOption="USER_ENTERED", body={'values': [[note]]}).execute()
 
 def delete_sheet_row(row_index):
@@ -140,7 +120,13 @@ def upload_to_bucket(file_obj, filename):
         blob = bucket.blob(filename)
         file_obj.seek(0)
         blob.upload_from_file(file_obj, content_type='image/jpeg')
-        # ตรวจสอบว่าชื่อ Bucket ถูกต้อง
+        
+        # ⚠️ พยายามสั่งเปิด Public (อาจจะติด Permission ในบางเคส แต่ใส่ไว้ก่อน)
+        try:
+            blob.make_public()
+        except:
+            pass # ถ้าไม่ได้ เดี๋ยวไปแก้ที่ Console เอา
+            
         return f"[https://storage.googleapis.com/](https://storage.googleapis.com/){BUCKET_NAME}/{filename}"
     except Exception as e:
         return f"Error: {e}"
@@ -148,13 +134,11 @@ def upload_to_bucket(file_obj, filename):
 # --- 5. UI ---
 tab1, tab2 = st.tabs(["📸 บันทึก", "🛠️ จัดการ"])
 
-# === TAB 1: Scan ===
 with tab1:
     st.header(f"บันทึกต้นไม้ใหม่")
     uploaded_file = st.file_uploader("เลือกรูปภาพ", type=["jpg", "png", "jpeg"], key=f"uploader_{st.session_state['uploader_key']}")
 
     if uploaded_file:
-        # Resize ทันที (Memory Guard)
         original_image = Image.open(uploaded_file)
         original_image = ImageOps.exif_transpose(original_image)
         max_width = 700
@@ -171,10 +155,9 @@ with tab1:
         c1, c2 = st.columns([1, 2])
         with c1: st.image(image, use_container_width=True)
         
-        # AI Logic
         if 'last_analyzed_file' not in st.session_state or st.session_state['last_analyzed_file'] != uploaded_file.name:
             with c2:
-                status = st.info(f"🤖 AI ({st.session_state.get('working_model_name', 'Auto')}) Working...")
+                status = st.info(f"🤖 AI Working...")
                 st.session_state['ai_result'] = analyze_image(image)
                 st.session_state['last_analyzed_file'] = uploaded_file.name
                 status.empty()
@@ -190,7 +173,6 @@ with tab1:
                     
                     if st.form_submit_button("💾 บันทึก", type="primary"):
                         try:
-                            # 1. Upload
                             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                             img_byte = io.BytesIO()
                             image.save(img_byte, format='JPEG', quality=70)
@@ -200,27 +182,20 @@ with tab1:
                             if "Error" in link:
                                 st.error(f"Upload Failed: {link}")
                             else:
-                                # 2. Save Sheet
                                 today = str(datetime.today().date())
                                 append_to_sheet([today, pot_no, species, thai, link])
-                                
                                 st.success("✅ บันทึกสำเร็จ!")
-                                # แสดง Link ให้เห็นชัดๆ เพื่อ Debug
-                                st.code(link, language="text") 
-                                
-                                # Reset
                                 del st.session_state['ai_result']
                                 del st.session_state['last_analyzed_file']
                                 st.session_state['uploader_key'] += 1
                                 image.close()
                                 img_byte.close()
                                 gc.collect()
-                                time.sleep(2) # ให้เวลาอ่าน Link แป๊บนึง
+                                time.sleep(1)
                                 st.rerun()
                         except Exception as e:
                             st.error(f"Error: {e}")
 
-# === TAB 2: Dashboard ===
 with tab2:
     st.header("จัดการข้อมูลแคคตัส")
     if st.button("🔄 รีเฟรช"): st.rerun()
@@ -239,15 +214,16 @@ with tab2:
                 with st.container(border=True):
                     cols = st.columns([1, 3])
                     
-                    # ส่วนแสดงรูป (Logic ที่บอกว่า No Image)
+                    # --- ส่วนแสดงรูปที่แก้แล้ว ---
                     with cols[0]:
                         img_link = str(row.get('Image Link', '')).strip()
-                        # เช็คว่ามี http ไหม
-                        if img_link.startswith('http'):
+                        # แก้ไข: ใช้ 'in' แทน startswith เพื่อความยืดหยุ่น และเช็คความยาว
+                        if "http" in img_link and len(img_link) > 10:
                             st.image(img_link, use_container_width=True)
                         else: 
                             st.warning("No Image")
-                            st.caption(f"Data: {img_link}") # โชว์ว่าข้อมูลจริงๆคืออะไร จะได้รู้ว่าผิดตรงไหน
+                            # แสดงข้อมูลดิบให้ดู จะได้รู้ว่า sheet ส่งอะไรมา
+                            st.caption(f"Raw: {img_link}") 
                             
                     with cols[1]:
                         with st.form(f"edit_{i}"):
