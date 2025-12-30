@@ -11,8 +11,8 @@ import json
 import time
 import gc
 
-# --- 1. ตั้งค่าพื้นฐาน (สังเกตชื่อ v.ล่าสุด) ---
-st.set_page_config(page_title="Cactus Manager (v.ล่าสุด)", page_icon="🌵", layout="wide")
+# --- 1. ตั้งค่าพื้นฐาน (เปลี่ยนชื่อให้รู้ว่าเวอร์ชั่นล่าสุด) ---
+st.set_page_config(page_title="Cactus Manager (2.5 Flash)", page_icon="🌵", layout="wide")
 
 BUCKET_NAME = "cactus-free-storage-2025" 
 
@@ -44,27 +44,40 @@ def get_sheet_service():
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# --- 3. AI (Target: Gemini 2.0/2.5) ---
+# --- 3. AI (Target: gemini-2.5-flash) ---
 def find_working_model():
     if 'working_model_name' in st.session_state:
         return st.session_state['working_model_name']
     
-    # 2.0-flash-exp คือตัวที่ใหม่ที่สุดตอนนี้ (เทียบเท่า 2.5 ที่คุณต้องการ)
+    # ⚠️ จัดลำดับตามที่คุณต้องการเป๊ะๆ
     candidates = [
-        'gemini-2.0-flash-exp', 
-        'gemini-1.5-flash',       
+        'gemini-2.5-flash',       # <-- อันดับ 1
+        'gemini-2.0-flash-exp',   # สำรอง (เผื่อพิมพ์ผิด)
+        'gemini-1.5-flash',
         'gemini-pro'
     ]
     
+    status_box = st.empty()
+    
     for name in candidates:
         try:
+            # Test ยิงเบาๆ
             genai.GenerativeModel(name).generate_content("hi")
             st.session_state['working_model_name'] = name
+            
+            # แจ้งสถานะ
+            if name == 'gemini-2.5-flash':
+                status_box.success(f"✅ เชื่อมต่อ Gemini 2.5 Flash สำเร็จ!")
+            else:
+                status_box.info(f"ℹ️ ใช้โมเดล: {name}")
+                
+            time.sleep(1)
+            status_box.empty()
             return name
         except:
             continue
             
-    return 'gemini-1.5-flash'
+    return 'gemini-1.5-flash' # Fallback
 
 def analyze_image(image):
     model_name = find_working_model()
@@ -215,11 +228,10 @@ with tab2:
                 with st.container(border=True):
                     cols = st.columns([1, 3])
                     
-                    # --- ส่วนนี้คือจุดสำคัญที่ทำให้รูปขึ้น ---
+                    # --- ใช้ HTML แสดงรูป (Fix No Image) ---
                     with cols[0]:
                         img_link = str(row.get('Image Link', '')).strip()
                         
-                        # เราใช้ HTML <img> ตรงๆ เลย เพื่อบังคับให้เบราว์เซอร์แสดงรูป
                         if "http" in img_link:
                             st.markdown(
                                 f'<img src="{img_link}" style="width:100%; max-width:200px; border-radius:8px;">', 
@@ -227,8 +239,6 @@ with tab2:
                             )
                         else: 
                             st.warning("No Image")
-                            # ถ้าเป็นโค้ดใหม่ ข้อความข้างล่างนี้ต้องหายไป (เพราะผมลบ Data: ออกแล้ว)
-                            # ถ้ายังเห็น Data: ... แสดงว่าโค้ดยังไม่อัปเดตครับ
                     
                     with cols[1]:
                         with st.form(f"edit_{i}"):
